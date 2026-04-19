@@ -41,9 +41,14 @@ bazel test //myapp/...   # kind cluster shared across all services in each servi
 
 ### Requirements
 
-- Docker must be installed and running on the test host.
+- Docker **or** podman must be installed and running on the test host.
+  The launcher auto-detects which runtime is available.
 - `kind` must be installed (auto-detected from `$PATH` or `~/.local/bin`).
 - `kubectl` must be installed (auto-detected from `$PATH` or `~/.local/bin`).
+
+**Rootless podman** (Fedora, RHEL, etc.) works automatically. The launcher
+re-executes itself under `systemd-run --scope --user --property=Delegate=yes`
+when podman requires cgroup delegation.
 
 Install kind:
 
@@ -397,12 +402,15 @@ Platforms supported: `linux_amd64`, `darwin_arm64`, `darwin_amd64`.
 ### Running the self-tests
 
 ```sh
-# Non-Docker tests (health check behavior):
+# Health check test (no container runtime needed):
 bazel test //tests/...
 
-# Docker-requiring tests (requires kind + Docker):
-bazel test //tests/... --strategy=TestRunner=local \
-    --build_tests_only --test_tag_filters=requires-docker
+# All tests including cluster tests (requires kind + Docker or podman).
+# For rootless podman, wrap in a delegated systemd scope:
+systemd-run --scope --user --property=Delegate=yes -- \
+    bazel test //tests:kind_health_check_test //tests:kind_server_test \
+        //tests:cluster_test //tests:manifest_test \
+        --strategy=TestRunner=local
 ```
 
 ---

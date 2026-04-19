@@ -134,13 +134,23 @@ Both modes produce a repo named `kind_<k8s_version>_<platform>` (e.g.,
 
 ---
 
-## Docker dependency
+## Container runtime dependency
 
-kind requires Docker. This has two build-time implications:
+kind requires Docker or podman. The launcher auto-detects which is available.
+
+### Runtime detection
+
+The launcher tries runtimes in order:
+
+1. **Docker** — `docker info` succeeds → use Docker directly.
+2. **podman** — `podman --runtime /usr/bin/crun info` succeeds → use podman
+   with `KIND_EXPERIMENTAL_PROVIDER=podman`.
+3. **Error** — neither available; fail with a clear install hint.
 
 ### Sandbox bypass
 
-Bazel's linux-sandbox blocks access to `/var/run/docker.sock`. `kind_cluster`
+Bazel's linux-sandbox blocks access to `/var/run/docker.sock` (Docker) and
+prevents the cgroup manipulation that rootless podman needs. `kind_cluster`
 targets must be tagged to run outside the sandbox:
 
 ```python
@@ -158,12 +168,26 @@ Or globally:
 test:kind --strategy=TestRunner=local
 ```
 
+### Rootless podman and cgroup delegation
+
+Rootless podman requires a systemd scope with `Delegate=yes` so the kubelet
+inside the kind node can manage cgroups. The launcher detects when it is
+running under podman and not already in a delegated scope (checked via
+`$INVOCATION_ID`) and re-executes itself via:
+
+```sh
+systemd-run --scope --user --property=Delegate=yes -- python3 launcher.py ...
+```
+
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are populated automatically
+from `/run/user/<uid>/` when the Bazel sandbox strips them.
+
 ### CI requirements
 
-CI runners must have Docker available and the current user must be in the
-`docker` group (or the runner must use root). GitHub Actions `ubuntu-latest`,
-`ubuntu-22.04`, and `ubuntu-24.04` all satisfy this. macOS runners require
-Docker Desktop or Colima.
+CI runners must have Docker or podman available. GitHub Actions `ubuntu-latest`,
+`ubuntu-22.04`, and `ubuntu-24.04` all have Docker. macOS runners require
+Docker Desktop or Colima. Systems with rootless podman (Fedora, RHEL 8+) work
+with the automatic systemd-run re-execution.
 
 ---
 
@@ -351,8 +375,10 @@ Failures surface as `bazel build` errors, not as runtime failures.
 
 ## Known limitations and non-goals
 
-- **Docker required.** Tests must run with `tags = ["no-sandbox"]` or
-  `--strategy=TestRunner=local`. See _Docker dependency_ above.
+- **Docker or podman required.** Tests must run with `tags = ["no-sandbox"]`
+  or `--strategy=TestRunner=local`. See _Container runtime dependency_ above.
+  Rootless podman requires a delegated systemd scope; the launcher handles this
+  automatically.
 - **Startup time ~30–90 s.** Not suitable for per-test isolation or fast
   feedback loops. Use `rules_kubernetes` for controller unit tests.
 - **No `kind_test` macro.** All usage requires `rules_itest`.

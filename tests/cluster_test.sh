@@ -57,6 +57,14 @@ node_count=$("$KUBECTL" get nodes --kubeconfig "$KUBECONFIG" \
 echo "PASS: $node_count node(s) found"
 
 # 2. Run a simple pod and verify it reaches Running or Succeeded state.
+# Wait for the default ServiceAccount to exist (created async after cluster start).
+echo "waiting for default ServiceAccount…"
+sa_deadline=$(( $(date +%s) + 30 ))
+until "$KUBECTL" get serviceaccount default --kubeconfig "$KUBECONFIG" >/dev/null 2>&1; do
+    [[ $(date +%s) -le $sa_deadline ]] || { echo "FAIL: default ServiceAccount not found" >&2; exit 1; }
+    sleep 1
+done
+
 echo "scheduling test pod…"
 "$KUBECTL" run kind-test-pod \
     --image=busybox:stable \

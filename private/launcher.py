@@ -3,10 +3,17 @@
 rules_kind launcher.
 
 Reads RULES_KIND_MANIFEST (JSON) and performs the full kind cluster lifecycle:
-  kind create cluster → kind get kubeconfig → wait for API server
+  detect runtime (Docker or podman) → kind create cluster
+  → kind get kubeconfig → wait for API server
   → kind load image-archive (images) → kubectl apply (manifests)
   → write $TEST_TMPDIR/<name>.env → signal.pause()
   → SIGTERM → kind delete cluster → exit 0
+
+Container runtime:
+  By default, Docker is used. If Docker is unavailable, podman is used
+  automatically (KIND_EXPERIMENTAL_PROVIDER=podman). Rootless podman requires
+  running under a systemd scope with Delegate=yes; the launcher handles this
+  by re-executing itself via systemd-run when needed.
 """
 
 import dataclasses
@@ -17,8 +24,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import uuid
 
 
@@ -62,17 +67,10 @@ def _ensure_executable(path):
             raise
 
 
-# ---------------------------------------------------------------------------
-# kind cluster lifecycle
-# ---------------------------------------------------------------------------
-
-def _allocate_cluster_name():
-    return "kind-" + uuid.uuid4().hex[:12]
-
-
-def _run(args, check=True, **kwargs):
+def _run(args, env=None, check=True, **kwargs):
     """Run a subprocess, print output on failure."""
-    result = subprocess.run(args, capture_output=True, text=True, **kwargs)
+    result = subprocess.run(
+        args, capture_output=True, text=True, env=env, **kwargs)
     if check and result.returncode != 0:
         raise RuntimeError(
             f"command failed: {' '.join(str(a) for a in args)}\n"
@@ -82,8 +80,100 @@ def _run(args, check=True, **kwargs):
     return result
 
 
-def _create_cluster(kind_bin, cluster_name, k8s_version, kind_config):
-    """Run kind create cluster."""
+# ---------------------------------------------------------------------------
+# Container runtime detection
+# ---------------------------------------------------------------------------
+
+def _detect_runtime():
+    """Return ("docker", env_extras) or ("podman", env_extras).
+
+    env_extras is a dict of environment variables to add to subprocess calls.
+    For podman, includes KIND_EXPERIMENTAL_PROVIDER=podman.
+    """
+    # Check if Docker is available and responsive.
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            _log("using Docker as container runtime")
+            return "docker", {}
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Fall back to podman.
+    try:
+        result = subprocess.run(
+            ["podman", "--runtime", "/usr/bin/crun", "info"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            _log("Docker unavailable, using podman as container runtime")
+            return "podman", {"KIND_EXPERIMENTAL_PROVIDER": "podman"}
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    raise RuntimeError(
+        "Neither Docker nor podman is available.\n"
+        "Install Docker: https://docs.docker.com/engine/install/\n"
+        "  or podman:   https://podman.io/docs/installation"
+    )
+
+
+def _is_in_systemd_delegation():
+    """Return True if we are already running inside a delegated systemd scope."""
+    # The INVOCATION_ID env var is set by systemd when running under a scope/service.
+    return bool(os.environ.get("INVOCATION_ID"))
+
+
+def _reexec_under_systemd():
+    """Re-exec this process under systemd-run --scope --property=Delegate=yes."""
+    _log("re-executing under systemd-run for rootless podman cgroup delegation…")
+
+    env = os.environ.copy()
+
+    # systemd-run --user needs XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS.
+    # Bazel's sandbox may strip these; derive them from the real UID.
+    uid = os.getuid()
+    xdg = f"/run/user/{uid}"
+    if not env.get("XDG_RUNTIME_DIR") and os.path.isdir(xdg):
+        env["XDG_RUNTIME_DIR"] = xdg
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        bus = f"unix:path={xdg}/bus"
+        if os.path.exists(f"{xdg}/bus"):
+            env["DBUS_SESSION_BUS_ADDRESS"] = bus
+
+    cmd = [
+        "systemd-run",
+        "--scope",
+        "--user",
+        "--property=Delegate=yes",
+        "--",
+        sys.executable,
+    ] + sys.argv
+    os.execvpe(cmd[0], cmd, env)
+
+
+# ---------------------------------------------------------------------------
+# kind cluster lifecycle
+# ---------------------------------------------------------------------------
+
+def _allocate_cluster_name():
+    return "kind-" + uuid.uuid4().hex[:12]
+
+
+def _kind_env(runtime_env):
+    """Merge runtime env extras into the current environment."""
+    env = os.environ.copy()
+    env.update(runtime_env)
+    if "podman" in runtime_env.get("KIND_EXPERIMENTAL_PROVIDER", ""):
+        # Ensure podman uses the correct OCI runtime.
+        env.setdefault("KIND_EXPERIMENTAL_PROVIDER", "podman")
+    return env
+
+
+def _create_cluster(kind_bin, cluster_name, k8s_version, kind_config, env):
     cmd = [
         kind_bin, "create", "cluster",
         "--name", cluster_name,
@@ -92,20 +182,18 @@ def _create_cluster(kind_bin, cluster_name, k8s_version, kind_config):
     if kind_config:
         cmd += ["--config", kind_config]
     _log(f"creating cluster {cluster_name} (k8s v{k8s_version})…")
-    _run(cmd)
+    _run(cmd, env=env)
     _log(f"cluster {cluster_name} created")
 
 
-def _get_kubeconfig(kind_bin, cluster_name, kubeconfig_path):
-    """Write kubeconfig for the cluster."""
-    result = _run([kind_bin, "get", "kubeconfig", "--name", cluster_name])
+def _get_kubeconfig(kind_bin, cluster_name, kubeconfig_path, env):
+    result = _run([kind_bin, "get", "kubeconfig", "--name", cluster_name], env=env)
     with open(kubeconfig_path, "w") as f:
         f.write(result.stdout)
     _log(f"kubeconfig written to {kubeconfig_path}")
 
 
 def _wait_apiserver_ready(kubectl_bin, kubeconfig, timeout=120):
-    """Poll kubectl cluster-info until the API server responds."""
     _log("waiting for API server…")
     deadline = time.monotonic() + timeout
     last_err = None
@@ -126,7 +214,6 @@ def _wait_apiserver_ready(kubectl_bin, kubeconfig, timeout=120):
 
 
 def _get_api_server_url(kubectl_bin, kubeconfig):
-    """Return the cluster API server URL from kubectl cluster-info."""
     result = _run([
         kubectl_bin, "config", "view",
         "--kubeconfig", kubeconfig,
@@ -136,18 +223,16 @@ def _get_api_server_url(kubectl_bin, kubeconfig):
     return result.stdout.strip()
 
 
-def _load_image(kind_bin, cluster_name, tarball_path):
-    """Load a Docker image tarball into the kind cluster."""
+def _load_image(kind_bin, cluster_name, tarball_path, env):
     _log(f"loading image: {os.path.basename(tarball_path)}")
     _run([
         kind_bin, "load", "image-archive",
         tarball_path,
         "--name", cluster_name,
-    ])
+    ], env=env)
 
 
 def _apply_manifests(kubectl_bin, kubeconfig, manifest_files):
-    """Apply YAML manifests in order."""
     for path in manifest_files:
         _log(f"applying: {os.path.basename(path)}")
         result = _run([
@@ -158,11 +243,10 @@ def _apply_manifests(kubectl_bin, kubeconfig, manifest_files):
             _log(result.stdout.strip())
 
 
-def _delete_cluster(kind_bin, cluster_name):
-    """Delete the kind cluster (best-effort; called on shutdown)."""
+def _delete_cluster(kind_bin, cluster_name, env):
     _log(f"deleting cluster {cluster_name}…")
     try:
-        _run([kind_bin, "delete", "cluster", "--name", cluster_name])
+        _run([kind_bin, "delete", "cluster", "--name", cluster_name], env=env)
         _log("cluster deleted")
     except Exception as e:
         _log(f"warning: cluster deletion failed: {e}")
@@ -200,12 +284,25 @@ def main():
     _ensure_executable(kind_bin)
     _ensure_executable(kubectl_bin)
 
-    k8s_version = m.get("k8s_version", "1.29")
+    k8s_version      = m.get("k8s_version", "1.29")
+    k8s_node_version = m.get("k8s_node_version", k8s_version)
 
-    # Resolve optional kind config.
     kind_config = None
     if "kind_config" in m:
         kind_config = _find_runfile(m["kind_config"], workspace)
+
+    # Detect container runtime (Docker or podman).
+    runtime, runtime_env = _detect_runtime()
+
+    # Rootless podman requires a delegated systemd cgroup scope.
+    if runtime == "podman" and not _is_in_systemd_delegation():
+        _reexec_under_systemd()
+        # If _reexec_under_systemd returns (it shouldn't — it calls execvpe),
+        # fall through to the rest of main().
+
+    env = _kind_env(runtime_env)
+    if runtime == "podman":
+        env["KIND_EXPERIMENTAL_PROVIDER"] = "podman"
 
     cluster_name   = _allocate_cluster_name()
     kubeconfig     = os.path.join(test_tmpdir, "kubeconfig")
@@ -213,38 +310,30 @@ def main():
 
     _log(f"cluster name: {cluster_name}")
     _log(f"env file:     {output_env}")
+    _log(f"runtime:      {runtime}")
 
     # Create cluster.
-    _create_cluster(kind_bin, cluster_name, k8s_version, kind_config)
+    _create_cluster(kind_bin, cluster_name, k8s_node_version, kind_config, env)
 
-    # Register cleanup handler immediately after cluster exists.
-    cluster_created = True
-
+    # Register shutdown handler immediately after cluster exists.
     def _shutdown(signum, _frame):
         _log(f"received signal {signum}, shutting down…")
-        _delete_cluster(kind_bin, cluster_name)
+        _delete_cluster(kind_bin, cluster_name, env)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
     try:
-        # Write kubeconfig.
-        _get_kubeconfig(kind_bin, cluster_name, kubeconfig)
-
-        # Wait for API server.
+        _get_kubeconfig(kind_bin, cluster_name, kubeconfig, env)
         _wait_apiserver_ready(kubectl_bin, kubeconfig)
-
-        # Get API server URL.
         apiserver_url = _get_api_server_url(kubectl_bin, kubeconfig)
         _log(f"API server: {apiserver_url}")
 
-        # Load image tarballs.
         for tarball_short in m.get("image_tarballs", []):
             tarball_path = _find_runfile(tarball_short, workspace)
-            _load_image(kind_bin, cluster_name, tarball_path)
+            _load_image(kind_bin, cluster_name, tarball_path, env)
 
-        # Apply manifests.
         manifest_files = m.get("manifest_files", [])
         if manifest_files:
             _log(f"applying {len(manifest_files)} manifest file(s)…")
@@ -261,13 +350,11 @@ def main():
         os.replace(tmp, output_env)
         _log(f"cluster ready — env file written: {output_env}")
 
-        # Block until signalled.
         while True:
             signal.pause()
 
     except Exception:
-        # Clean up the cluster before propagating the exception.
-        _delete_cluster(kind_bin, cluster_name)
+        _delete_cluster(kind_bin, cluster_name, env)
         raise
 
 

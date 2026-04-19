@@ -80,14 +80,29 @@ test:kind --strategy=TestRunner=local
 
 ### Launcher modes
 
-The launcher (`private/launcher.py`) supports two modes set by `RULES_KIND_MODE`:
+The launcher (`private/launcher.py`) has one mode: long-running cluster service.
+`kind_cluster` is always a long-running service; it is never exec'd directly
+into a test binary.
 
-| Mode | Env var | Behaviour |
-|------|---------|-----------|
-| `cluster` (default) | `RULES_KIND_MANIFEST` | kind create → load images → apply manifests → write env file → signal.pause() |
+### Container runtime detection
 
-There is only one mode. `kind_cluster` is always a long-running service; it is
-never exec'd directly into a test binary.
+The launcher auto-detects the container runtime at startup:
+
+1. Tries `docker info` — uses Docker if available.
+2. Falls back to `podman --runtime /usr/bin/crun info` — uses podman with
+   `KIND_EXPERIMENTAL_PROVIDER=podman`.
+3. Fails with a clear error if neither is available.
+
+Rootless podman requires cgroup delegation. If the launcher detects podman and
+is not already inside a delegated systemd scope (no `INVOCATION_ID` env var),
+it re-executes itself via:
+
+```sh
+systemd-run --scope --user --property=Delegate=yes -- python3 launcher.py ...
+```
+
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set automatically from
+`/run/user/<uid>/` when the Bazel sandbox strips them.
 
 ### Cluster lifecycle
 
@@ -260,19 +275,21 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-04-19)
 
-1 test passes without Docker. 3 tests require Docker + kind cluster (tagged `manual`).
+All 4 tests pass. The 3 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
-| Test target                        | What it verifies                                                        | Result            |
-|------------------------------------|-------------------------------------------------------------------------|-------------------|
-| `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present       | PASSED            |
-| `//tests:kind_server_test`         | kind_cluster starts, writes env file, SIGTERM shuts down                | manual (Docker)   |
-| `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                | manual (Docker)   |
-| `//tests:manifest_test`            | ConfigMap from manifests present after env file written                 | manual (Docker)   |
+| Test target                        | What it verifies                                                                  | Result |
+|------------------------------------|-----------------------------------------------------------------------------------|--------|
+| `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
+| `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
+| `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
+| `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
 
-To run Docker-requiring tests:
+To run cluster tests (requires Docker or podman):
 
 ```sh
-bazel test //tests/... --strategy=TestRunner=local --build_tests_only --test_tag_filters=requires-docker
+# Under a delegated systemd scope (needed for rootless podman):
+systemd-run --scope --user --property=Delegate=yes -- \
+    bazel test //tests/... --strategy=TestRunner=local
 ```
 
 ### Launcher script

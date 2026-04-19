@@ -13,10 +13,15 @@ def _json_str_list(lst):
     return "[" + ", ".join([_json_str(s) for s in lst]) + "]"
 
 # ---------------------------------------------------------------------------
-# Supported k8s versions (for analysis-time validation)
+# Supported k8s versions (for analysis-time validation) and the corresponding
+# full kindest/node image tag to pass to kind create cluster --image.
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_VERSIONS = ["1.29"]
+_KINDEST_NODE_VERSIONS = {
+    "1.29": "1.29.2",
+}
+
+_SUPPORTED_VERSIONS = list(_KINDEST_NODE_VERSIONS.keys())
 
 # ---------------------------------------------------------------------------
 # kind_cluster
@@ -46,11 +51,14 @@ def _kind_cluster_impl(ctx):
         kind_config_short = ctx.file.config.short_path
 
     # Build the launcher manifest JSON.
+    node_version = _KINDEST_NODE_VERSIONS[ctx.attr.k8s_version]
+
     fields = [
-        '  "workspace":   ' + _json_str(ctx.workspace_name),
-        '  "kind_bin":    ' + _json_str(binary_info.kind.short_path),
-        '  "kubectl_bin": ' + _json_str(binary_info.kubectl.short_path),
-        '  "k8s_version": ' + _json_str(ctx.attr.k8s_version),
+        '  "workspace":        ' + _json_str(ctx.workspace_name),
+        '  "kind_bin":         ' + _json_str(binary_info.kind.short_path),
+        '  "kubectl_bin":      ' + _json_str(binary_info.kubectl.short_path),
+        '  "k8s_version":      ' + _json_str(ctx.attr.k8s_version),
+        '  "k8s_node_version": ' + _json_str(node_version),
     ]
     if kind_config_short:
         fields.append('  "kind_config": ' + _json_str(kind_config_short))
