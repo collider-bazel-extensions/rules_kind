@@ -122,6 +122,50 @@ _KUBECTL_SEARCH_PATHS = [
     "/usr/bin",
 ]
 
+def _check_container_runtime(rctx):
+    """Fail at analysis time with a clear message if no container runtime is found.
+
+    Only runs on the host platform; stubs skip this check.
+    """
+    docker_ok = rctx.execute(["docker", "info"], timeout = 5).return_code == 0
+    if docker_ok:
+        return
+
+    podman_ok = rctx.execute(
+        ["podman", "--runtime", "/usr/bin/crun", "info"], timeout = 5,
+    ).return_code == 0
+    if podman_ok:
+        return
+
+    docker_found = rctx.execute(["sh", "-c", "command -v docker"]).return_code == 0
+    podman_found = rctx.execute(["sh", "-c", "command -v podman"]).return_code == 0
+
+    if docker_found:
+        docker_detail = "docker is installed but 'docker info' failed — is the daemon running?"
+    else:
+        docker_detail = "docker not found in PATH"
+
+    if podman_found:
+        podman_detail = "podman is installed but 'podman info' failed — check podman configuration"
+    else:
+        podman_detail = "podman not found in PATH"
+
+    fail(
+        "\n\nrules_kind requires a container runtime (Docker or podman).\n" +
+        "kind uses it to run Kubernetes node containers.\n\n" +
+        "What was found:\n" +
+        "  docker: " + docker_detail + "\n" +
+        "  podman: " + podman_detail + "\n\n" +
+        "Install one of:\n" +
+        "  Docker  — https://docs.docker.com/engine/install/\n" +
+        "            Ubuntu/Debian: sudo apt install docker.io\n" +
+        "            Fedora/RHEL:   sudo dnf install docker\n" +
+        "  podman  — https://podman.io/docs/installation\n" +
+        "            Ubuntu/Debian: sudo apt install podman\n" +
+        "            Fedora/RHEL:   sudo dnf install podman\n\n" +
+        "After installing, verify with: docker info   or   podman info\n"
+    )
+
 def _kind_system_binary_repo_impl(rctx):
     version  = rctx.attr.version
     bin_dir  = rctx.attr.bin_dir
@@ -132,6 +176,8 @@ def _kind_system_binary_repo_impl(rctx):
     if expected_os and rctx.os.name.lower() != expected_os:
         rctx.file("BUILD.bazel", _STUB_BUILD)
         return
+
+    _check_container_runtime(rctx)
 
     home = rctx.os.environ.get("HOME", "")
 

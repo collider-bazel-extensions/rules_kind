@@ -90,6 +90,9 @@ def _detect_runtime():
     env_extras is a dict of environment variables to add to subprocess calls.
     For podman, includes KIND_EXPERIMENTAL_PROVIDER=podman.
     """
+    docker_problem = None
+    podman_problem = None
+
     # Check if Docker is available and responsive.
     try:
         result = subprocess.run(
@@ -99,8 +102,14 @@ def _detect_runtime():
         if result.returncode == 0:
             _log("using Docker as container runtime")
             return "docker", {}
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+        docker_problem = (
+            f"docker info exited {result.returncode} "
+            f"(daemon not running?): {(result.stderr or result.stdout).strip()[:200]}"
+        )
+    except FileNotFoundError:
+        docker_problem = "docker binary not found in PATH"
+    except subprocess.TimeoutExpired:
+        docker_problem = "docker info timed out after 5 s (daemon hung?)"
 
     # Fall back to podman.
     try:
@@ -111,13 +120,32 @@ def _detect_runtime():
         if result.returncode == 0:
             _log("Docker unavailable, using podman as container runtime")
             return "podman", {"KIND_EXPERIMENTAL_PROVIDER": "podman"}
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+        podman_problem = (
+            f"podman info exited {result.returncode}: "
+            f"{(result.stderr or result.stdout).strip()[:200]}"
+        )
+    except FileNotFoundError:
+        podman_problem = "podman binary not found in PATH"
+    except subprocess.TimeoutExpired:
+        podman_problem = "podman info timed out after 5 s"
 
     raise RuntimeError(
-        "Neither Docker nor podman is available.\n"
-        "Install Docker: https://docs.docker.com/engine/install/\n"
-        "  or podman:   https://podman.io/docs/installation"
+        "rules_kind requires a container runtime (Docker or podman) to run\n"
+        "Kubernetes nodes. kind cannot start a cluster without one.\n"
+        "\n"
+        "What was tried:\n"
+        f"  docker: {docker_problem}\n"
+        f"  podman: {podman_problem}\n"
+        "\n"
+        "Install one of:\n"
+        "  Docker  — https://docs.docker.com/engine/install/\n"
+        "            Ubuntu/Debian: sudo apt install docker.io\n"
+        "            Fedora/RHEL:   sudo dnf install docker\n"
+        "  podman  — https://podman.io/docs/installation\n"
+        "            Ubuntu/Debian: sudo apt install podman\n"
+        "            Fedora/RHEL:   sudo dnf install podman\n"
+        "\n"
+        "After installing, verify with: docker info   or   podman info"
     )
 
 
