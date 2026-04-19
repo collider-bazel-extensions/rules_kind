@@ -1,0 +1,74 @@
+load("//private:binary.bzl", "kind_binary", "kind_binary_files")
+
+# ---------------------------------------------------------------------------
+# Platform config_settings
+# ---------------------------------------------------------------------------
+
+config_setting(
+    name = "_linux_amd64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+config_setting(
+    name = "_darwin_arm64",
+    constraint_values = [
+        "@platforms//os:osx",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+config_setting(
+    name = "_darwin_amd64",
+    constraint_values = [
+        "@platforms//os:osx",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# kind 1.29 binary targets
+# ---------------------------------------------------------------------------
+
+kind_binary_files(
+    name    = "kind_1_29_linux_amd64_files",
+    bins    = ["@kind_1_29_linux_amd64//:all_files"],
+    version = "1.29",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_29_darwin_arm64_files",
+    bins    = ["@kind_1_29_darwin_arm64//:all_files"],
+    version = "1.29",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_29_darwin_amd64_files",
+    bins    = ["@kind_1_29_darwin_amd64//:all_files"],
+    version = "1.29",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary(
+    name = "kind_1_29",
+    binary = select({
+        ":_linux_amd64":   ":kind_1_29_linux_amd64_files",
+        ":_darwin_arm64":  ":kind_1_29_darwin_arm64_files",
+        ":_darwin_amd64":  ":kind_1_29_darwin_amd64_files",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
+# Default alias — update when adding newer versions
+# ---------------------------------------------------------------------------
+
+alias(
+    name       = "kind_default",
+    actual     = ":kind_1_29",
+    visibility = ["//visibility:public"],
+)

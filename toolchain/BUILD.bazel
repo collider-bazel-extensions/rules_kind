@@ -1,0 +1,19 @@
+load(":toolchain.bzl", "kind_toolchain")
+
+toolchain_type(
+    name       = "kind",
+    visibility = ["//visibility:public"],
+)
+
+kind_toolchain(
+    name         = "kind_toolchain_impl",
+    kind_binary  = "//:kind_default",
+    visibility   = ["//visibility:public"],
+)
+
+toolchain(
+    name            = "kind_toolchain",
+    toolchain       = ":kind_toolchain_impl",
+    toolchain_type  = ":kind",
+    visibility      = ["//visibility:public"],
+)

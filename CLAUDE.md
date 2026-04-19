@@ -258,9 +258,22 @@ linux-sandbox so the Docker socket is accessible.
 
 All tests must pass before any commit with code changes.
 
-### Test results (last full run: pending)
+### Test results (last full run: 2026-04-19)
 
-Tests not yet implemented.
+1 test passes without Docker. 3 tests require Docker + kind cluster (tagged `manual`).
+
+| Test target                        | What it verifies                                                        | Result            |
+|------------------------------------|-------------------------------------------------------------------------|-------------------|
+| `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present       | PASSED            |
+| `//tests:kind_server_test`         | kind_cluster starts, writes env file, SIGTERM shuts down                | manual (Docker)   |
+| `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                | manual (Docker)   |
+| `//tests:manifest_test`            | ConfigMap from manifests present after env file written                 | manual (Docker)   |
+
+To run Docker-requiring tests:
+
+```sh
+bazel test //tests/... --strategy=TestRunner=local --build_tests_only --test_tag_filters=requires-docker
+```
 
 ### Launcher script
 

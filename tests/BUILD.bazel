@@ -1,0 +1,87 @@
+load("//:defs.bzl", "kind_cluster", "kind_health_check")
+
+# ---------------------------------------------------------------------------
+# kind_cluster service for all Docker-requiring tests
+# ---------------------------------------------------------------------------
+
+kind_cluster(
+    name        = "test_cluster",
+    k8s_version = "1.29",
+    tags        = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kind_health_check(
+    name    = "test_cluster_health",
+    cluster = ":test_cluster",
+)
+
+# ---------------------------------------------------------------------------
+# kind_cluster with manifests applied
+# ---------------------------------------------------------------------------
+
+kind_cluster(
+    name      = "test_cluster_with_manifests",
+    k8s_version = "1.29",
+    manifests = glob(["manifests/*.yaml"]),
+    tags      = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kind_health_check(
+    name    = "test_cluster_with_manifests_health",
+    cluster = ":test_cluster_with_manifests",
+)
+
+# ---------------------------------------------------------------------------
+# kind_health_check_test — no Docker required
+# ---------------------------------------------------------------------------
+# Tests that the health check exits non-zero without the env file,
+# and exits 0 when the env file is present.
+
+sh_test(
+    name = "kind_health_check_test",
+    srcs = ["kind_health_check_test.sh"],
+    data = [":test_cluster_health"],
+    tags = ["no-sandbox"],
+)
+
+# ---------------------------------------------------------------------------
+# kind_server_test — requires Docker
+# Tests: kind_cluster starts, writes env file, env vars present, SIGTERM shuts down.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name    = "kind_server_test",
+    srcs    = ["kind_server_test.sh"],
+    data    = [":test_cluster"],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)
+
+# ---------------------------------------------------------------------------
+# cluster_test — requires Docker
+# Tests: cluster connectivity, pod scheduling.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name    = "cluster_test",
+    srcs    = ["cluster_test.sh"],
+    data    = [":test_cluster"],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)
+
+# ---------------------------------------------------------------------------
+# manifest_test — requires Docker
+# Tests: manifests applied before env file written.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name    = "manifest_test",
+    srcs    = ["manifest_test.sh"],
+    data    = [":test_cluster_with_manifests"],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)
