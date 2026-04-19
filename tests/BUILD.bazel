@@ -85,3 +85,30 @@ sh_test(
     timeout = "long",
     tags    = ["manual", "no-sandbox", "requires-docker"],
 )
+
+# ---------------------------------------------------------------------------
+# pod_to_pod_test — requires Docker
+# kind_cluster with a pre-deployed HTTP server (hello-server pod + Service).
+# Tests: pod scheduling, cluster DNS, pod-to-pod HTTP communication.
+# ---------------------------------------------------------------------------
+
+kind_cluster(
+    name      = "test_cluster_pod_to_pod",
+    k8s_version = "1.29",
+    manifests = ["manifests/hello_server.yaml"],
+    tags      = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kind_health_check(
+    name    = "test_cluster_pod_to_pod_health",
+    cluster = ":test_cluster_pod_to_pod",
+)
+
+sh_test(
+    name    = "pod_to_pod_test",
+    srcs    = ["pod_to_pod_test.sh"],
+    data    = [":test_cluster_pod_to_pod"],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)

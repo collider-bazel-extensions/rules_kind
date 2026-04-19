@@ -218,6 +218,137 @@ echo "PASS"
 
 ---
 
+### Pod-to-pod communication
+
+This example shows how to test that one pod can reach another over the cluster's
+internal DNS. A busybox HTTP server is deployed via the `kind_cluster` manifest;
+a client pod then fetches from it by Service name.
+
+```
+tests/
+├── BUILD.bazel
+├── pod_to_pod_test.sh
+└── manifests/
+    └── hello_server.yaml   ← server Pod + ClusterIP Service
+```
+
+```yaml
+# tests/manifests/hello_server.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-server
+  namespace: default
+  labels:
+    app: hello-server
+spec:
+  automountServiceAccountToken: false
+  containers:
+  - name: server
+    image: busybox:stable
+    command:
+    - sh
+    - -c
+    - |
+      mkdir -p /srv
+      echo 'Hello from rules_kind' > /srv/index.html
+      httpd -f -p 8080 -h /srv/
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-server
+  namespace: default
+spec:
+  selector:
+    app: hello-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+```
+
+```python
+# tests/BUILD.bazel
+kind_cluster(
+    name      = "pod_to_pod_cluster",
+    k8s_version = "1.29",
+    manifests = ["manifests/hello_server.yaml"],   # server deployed at startup
+    tags      = ["no-sandbox", "requires-docker"],
+)
+
+kind_health_check(name = "pod_to_pod_cluster_health", cluster = ":pod_to_pod_cluster")
+
+sh_test(
+    name = "pod_to_pod_test",
+    srcs = ["pod_to_pod_test.sh"],
+    data = [":pod_to_pod_cluster"],
+    size = "large",
+    tags = ["no-sandbox", "requires-docker"],
+)
+```
+
+```bash
+# tests/pod_to_pod_test.sh
+set -euo pipefail
+
+source "$TEST_TMPDIR/pod_to_pod_cluster.env"
+
+# Wait for the server pod to reach Running.
+deadline=$(( $(date +%s) + 60 ))
+phase=""
+while [[ "$phase" != "Running" ]]; do
+    [[ $(date +%s) -le $deadline ]] || { echo "FAIL: server pod timeout" >&2; exit 1; }
+    phase=$("$KUBECTL" get pod hello-server --namespace default \
+        --kubeconfig "$KUBECONFIG" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
+    sleep 2
+done
+
+# Run a client pod that fetches from the server via its Service DNS name.
+# The cluster DNS resolves 'hello-server' to the ClusterIP of the Service.
+"$KUBECTL" run hello-client \
+    --image=busybox:stable \
+    --restart=Never \
+    --namespace default \
+    --kubeconfig "$KUBECONFIG" \
+    --overrides='{"spec":{"automountServiceAccountToken":false}}' \
+    -- sh -c 'wget -qO- http://hello-server:8080/'
+
+# Wait for the client pod to complete.
+deadline=$(( $(date +%s) + 60 ))
+phase=""
+while [[ "$phase" != "Succeeded" ]]; do
+    [[ $(date +%s) -le $deadline ]] || { echo "FAIL: client pod timeout" >&2; exit 1; }
+    [[ "$phase" != "Failed" ]] || { echo "FAIL: client pod failed" >&2; exit 1; }
+    phase=$("$KUBECTL" get pod hello-client --namespace default \
+        --kubeconfig "$KUBECONFIG" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
+    sleep 2
+done
+
+# Verify the response body.
+response=$("$KUBECTL" logs hello-client --namespace default --kubeconfig "$KUBECONFIG")
+[[ "$response" == *"Hello from rules_kind"* ]] || {
+    echo "FAIL: unexpected response: $response" >&2; exit 1; }
+
+echo "PASS: client received '$response' from server"
+```
+
+> **Note on ServiceAccount timing.** The Kubernetes controller-manager creates
+> the `default` ServiceAccount in each namespace asynchronously after the API
+> server starts. The `rules_kind` launcher automatically waits for it before
+> applying manifests. Pod manifests should set
+> `automountServiceAccountToken: false` to avoid depending on the SA being
+> present at pod scheduling time.
+
+---
+
 ### Multi-service test: operator + API server + database
 
 ```python

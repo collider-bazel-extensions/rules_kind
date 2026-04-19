@@ -1,0 +1,41 @@
+---
+# A simple HTTP server pod using busybox's built-in httpd.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-server
+  namespace: default
+  labels:
+    app: hello-server
+spec:
+  automountServiceAccountToken: false
+  containers:
+  - name: server
+    image: busybox:stable
+    command:
+    - sh
+    - -c
+    - |
+      mkdir -p /srv
+      echo 'Hello from rules_kind' > /srv/index.html
+      httpd -f -p 8080 -h /srv/
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+# ClusterIP service so client pods can reach the server by DNS name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-server
+  namespace: default
+spec:
+  selector:
+    app: hello-server
+  ports:
+  - port: 8080
+    targetPort: 8080

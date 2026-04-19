@@ -275,7 +275,7 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-04-19)
 
-All 4 tests pass. The 3 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 5 tests pass. The 4 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
@@ -283,6 +283,7 @@ All 4 tests pass. The 3 cluster tests use podman (rootless Docker alternative) w
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
 | `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
+| `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | PASSED |
 
 To run cluster tests (requires Docker or podman):
 

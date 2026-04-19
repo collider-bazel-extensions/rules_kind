@@ -232,6 +232,27 @@ def _load_image(kind_bin, cluster_name, tarball_path, env):
     ], env=env)
 
 
+def _wait_default_serviceaccount(kubectl_bin, kubeconfig, timeout=60):
+    """Wait for the default ServiceAccount in the default namespace.
+
+    The controller-manager creates this asynchronously after the API server
+    starts. Applying Pod manifests before it exists causes an admission error
+    even when automountServiceAccountToken=false.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            [kubectl_bin, "get", "serviceaccount", "default",
+             "--namespace", "default", "--kubeconfig", kubeconfig],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(1)
+    raise TimeoutError(
+        f"default ServiceAccount not created within {timeout}s")
+
+
 def _apply_manifests(kubectl_bin, kubeconfig, manifest_files):
     for path in manifest_files:
         _log(f"applying: {os.path.basename(path)}")
@@ -336,6 +357,8 @@ def main():
 
         manifest_files = m.get("manifest_files", [])
         if manifest_files:
+            _log("waiting for default ServiceAccount…")
+            _wait_default_serviceaccount(kubectl_bin, kubeconfig)
             _log(f"applying {len(manifest_files)} manifest file(s)…")
             resolved = [_find_runfile(p, workspace) for p in manifest_files]
             _apply_manifests(kubectl_bin, kubeconfig, resolved)
