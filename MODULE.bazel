@@ -6,6 +6,11 @@ module(
 bazel_dep(name = "bazel_skylib", version = "1.5.0")
 bazel_dep(name = "platforms", version = "0.0.9")
 
+# Bazel 8+ no longer implicitly loads legacy native rules like `sh_test` —
+# tests/BUILD.bazel needs them. Dev-only since the rule library itself doesn't
+# emit shell rules; consumers don't inherit this.
+bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
+
 kind = use_extension("//:extensions.bzl", "kind")
 kind.system(versions = ["1.29"])
 use_repo(kind,
