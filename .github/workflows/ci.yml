@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: bazel test (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Run both runtimes even if one fails — they exercise independent code
+      # paths in the launcher and we want to see both outcomes per PR.
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.runtime }}
+          repository-cache: true
+
+      - name: Force podman fallback
+        # ubuntu-latest ships both runtimes pre-installed and active; the
+        # launcher's `_detect_runtime()` prefers Docker. To exercise the
+        # podman path we stop the Docker daemon first. We also enable
+        # lingering for the runner user so a user systemd instance is
+        # available — `systemd-run --user --scope` (the cgroup-delegation
+        # path the launcher takes for rootless podman) requires it.
+        if: matrix.runtime == 'podman'
+        run: |
+          set -euo pipefail
+          sudo systemctl stop docker.socket docker || true
+          sudo loginctl enable-linger "$USER"
+          for _ in 1 2 3 4 5; do
+            systemctl --user is-active default.target 2>/dev/null && break
+            sleep 1
+          done
+          podman info --format '{{.Host.OCIRuntime.Name}}: cgroups v{{.Host.CgroupsVersion}}'
+
+      - name: bazel build //...
+        run: bazel build //...
+
+      - name: bazel test //tests:...
+        # The cluster-using tests are `manual`-tagged so they don't run by
+        # accident on a developer box without Docker. CI lists them by name
+        # to opt in. `kind_health_check_test` is the one untagged test
+        # (no runtime needed) — included for parity across both jobs.
+        run: |
+          bazel test \
+            //tests:kind_health_check_test \
+            //tests:kind_server_test \
+            //tests:cluster_test \
+            //tests:manifest_test \
+            //tests:pod_to_pod_test \
+            --test_output=errors
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-testlogs-${{ matrix.runtime }}
+          path: bazel-testlogs/
+          if-no-files-found: ignore
