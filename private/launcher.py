@@ -16,9 +16,11 @@ Container runtime:
   by re-executing itself via systemd-run when needed.
 """
 
+import atexit
 import dataclasses
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -153,6 +155,31 @@ def _is_in_systemd_delegation():
     """Return True if we are already running inside a delegated systemd scope."""
     # The INVOCATION_ID env var is set by systemd when running under a scope/service.
     return bool(os.environ.get("INVOCATION_ID"))
+
+
+def _short_tmpdir_for_podman():
+    """Override `$TMPDIR` with a short path so rootless podman's conmon-term
+    unix-domain sockets stay under the kernel's 108-char `sun_path` limit.
+
+    Creates a fresh directory directly under `/tmp` (NOT under the inherited
+    `$TMPDIR` — `tempfile.mkdtemp()`'s default would use `$TMPDIR` as the
+    parent, which is exactly the long path we're trying to escape). The
+    directory is removed on launcher exit so we don't leak per-test cruft.
+    """
+    short = tempfile.mkdtemp(prefix="rules_kind-tmp-", dir="/tmp")
+    os.environ["TMPDIR"] = short
+    atexit.register(_best_effort_rmtree, short)
+    _log(f"podman: TMPDIR shortened to {short} "
+         f"(was {len(os.environ.get('TEST_TMPDIR', '?'))} chars)")
+
+
+def _best_effort_rmtree(path):
+    """Remove a directory tree, ignoring errors. Used in atexit handlers
+    where the best we can do is try."""
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def _reexec_under_systemd():
@@ -348,6 +375,24 @@ def main():
         _reexec_under_systemd()
         # If _reexec_under_systemd returns (it shouldn't — it calls execvpe),
         # fall through to the rest of main().
+
+    # Under rootless podman, conmon places per-container console sockets
+    # (`conmon-term.XXXXXX`) directly in `$TMPDIR`. Bazel's test driver sets
+    # `TMPDIR=$TEST_TMPDIR`, which is a long path under the bazel execroot
+    # (~150+ chars). The kernel's unix-domain `sun_path` limit is 108 bytes,
+    # so the socket path silently truncates and `crun` then can't open it
+    # ("OCI runtime attempted to invoke a command that was not found"). The
+    # fix is to point `$TMPDIR` at a short, persistent-for-this-launcher dir.
+    #
+    # `--test_env=TMPDIR=...` doesn't help — bazel resets `TMPDIR=$TEST_TMPDIR`
+    # after user `--test_env` overrides for hermeticity. The launcher is the
+    # right place to do this.
+    #
+    # We deliberately leave `$HOME` alone: podman's image storage lives at
+    # `$HOME/.local/share/containers/storage`, and redirecting it would
+    # invalidate the kindest/node image cache on every test run.
+    if runtime == "podman":
+        _short_tmpdir_for_podman()
 
     env = _kind_env(runtime_env)
     if runtime == "podman":
