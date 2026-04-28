@@ -1,6 +1,6 @@
 module(
     name = "rules_kind",
-    version = "0.1.0",
+    version = "0.1.2",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.5.0")
@@ -12,9 +12,12 @@ bazel_dep(name = "platforms", version = "0.0.9")
 bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
 
 kind = use_extension("//:extensions.bzl", "kind")
-kind.system(versions = ["1.29"])
+kind.system(versions = ["1.29", "1.32"])
 use_repo(kind,
     "kind_1_29_linux_amd64",
     "kind_1_29_darwin_arm64",
     "kind_1_29_darwin_amd64",
+    "kind_1_32_linux_amd64",
+    "kind_1_32_darwin_arm64",
+    "kind_1_32_darwin_amd64",
 )

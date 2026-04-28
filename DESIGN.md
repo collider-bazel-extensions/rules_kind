@@ -263,7 +263,7 @@ protocol to `pg_health_check` and `kubernetes_health_check`.
 
 | Attribute    | Type         | Default   | Description |
 |---|---|---|---|
-| `k8s_version` | string      | `"1.29"`  | Kubernetes minor version. Selects the `kindest/node` image. |
+| `k8s_version` | string      | `"1.29"`  | Kubernetes minor version. Selects the `kindest/node` image and the kind+kubectl binary pair. Supported: `"1.29"`, `"1.32"`. v0.1.2 added `"1.32"` because `kindest/node:v1.32.2` ships runc 1.2.5, which fixes a bind-mount-remount-RO EPERM bug under rootless container engines + kernel 6.x that breaks workloads such as `kube-proxy` and Cilium's agent on the older 1.29.2 image (runc 1.1.12). |
 | `config`      | label        | `None`    | kind config YAML file. Controls node count, port mappings, feature gates. |
 | `images`      | label\_list  | `[]`      | Container image targets to pre-load into the cluster via `kind load docker-image`. |
 | `manifests`   | label        | `None`    | `kubernetes_manifest` target applied after the cluster is ready. |

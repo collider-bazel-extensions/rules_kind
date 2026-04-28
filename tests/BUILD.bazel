@@ -113,3 +113,21 @@ sh_test(
     timeout = "long",
     tags    = ["manual", "no-sandbox", "requires-docker"],
 )
+
+# ---------------------------------------------------------------------------
+# k8s 1.32 — analysis-time only. Confirms the macro picks the 1.32
+# kind+kubectl pair (kind v0.27.0 / kubectl 1.32.2) and that the kindest
+# /node:v1.32.2 pin resolves. Marked manual; consumers exercise it via their
+# own smoke tests (e.g. rules_cilium).
+# ---------------------------------------------------------------------------
+
+kind_cluster(
+    name        = "test_cluster_1_32",
+    k8s_version = "1.32",
+    tags        = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kind_health_check(
+    name    = "test_cluster_1_32_health",
+    cluster = ":test_cluster_1_32",
+)

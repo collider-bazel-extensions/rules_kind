@@ -27,6 +27,34 @@ _KIND_VERSIONS = {
             "kubectl_sha256": "",  # placeholder
         },
     },
+    # k8s 1.32 added in v0.1.2 to unblock rules_cilium. kindest/node:v1.32.2
+    # ships runc 1.2.5, which fixes the bind-mount-remount-RO EPERM bug under
+    # rootless container engines + kernel 6.x that breaks kube-proxy and
+    # Cilium's agent on the older 1.29.2 image (runc 1.1.12). Use 1.32 for new
+    # workloads that depend on configmap mounts under user namespaces; existing
+    # 1.29 consumers keep their pin.
+    "1.32": {
+        "kind_version": "0.27.0",
+        "kubectl_version": "1.32.2",
+        "linux_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-linux-amd64",
+            "kind_sha256":   "a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl",
+            "kubectl_sha256": "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea",
+        },
+        "darwin_arm64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-darwin-arm64",
+            "kind_sha256":   "5240ca1acb587e1d0386532dd8c3373d81f5173b5af322919fc56f0cdd646596",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.32.2/bin/darwin/arm64/kubectl",
+            "kubectl_sha256": "31b6318deaa72014b72121e1c7a2e12496d077cee49bbeda94250aec4c978ffb",
+        },
+        "darwin_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.27.0/kind-darwin-amd64",
+            "kind_sha256":   "3435134325b6b9406ccfec417b13bb46a808fc74e9a2ebb0ca31b379c8293863",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.32.2/bin/darwin/amd64/kubectl",
+            "kubectl_sha256": "371b8fbd481e1e9052ace16d9c243e92618a2ea9a18c1aaf235d35fef20c0c32",
+        },
+    },
 }
 
 PLATFORMS = ["linux_amd64", "darwin_arm64", "darwin_amd64"]

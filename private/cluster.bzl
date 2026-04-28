@@ -19,6 +19,7 @@ def _json_str_list(lst):
 
 _KINDEST_NODE_VERSIONS = {
     "1.29": "1.29.2",
+    "1.32": "1.32.2",
 }
 
 _SUPPORTED_VERSIONS = list(_KINDEST_NODE_VERSIONS.keys())
@@ -28,7 +29,7 @@ _SUPPORTED_VERSIONS = list(_KINDEST_NODE_VERSIONS.keys())
 # ---------------------------------------------------------------------------
 
 def _kind_cluster_impl(ctx):
-    binary_info = ctx.attr._binary[KindBinaryInfo]
+    binary_info = ctx.attr.binary[KindBinaryInfo]
 
     # Analysis-time validation.
     if ctx.attr.k8s_version not in _SUPPORTED_VERSIONS:
@@ -125,22 +126,12 @@ exec python3 "$RUNFILES_ROOT/{workspace}/{launcher_short}" "$@"
         runfiles   = rf,
     )]
 
-kind_cluster = rule(
+kind_cluster_rule = rule(
     doc = """\
 Long-running kind (Kubernetes IN Docker) cluster for multi-service
-integration tests via rules_itest.
-
-Starts a kind cluster, pre-loads container images, applies Kubernetes
-manifests, then writes $TEST_TMPDIR/<name>.env atomically and blocks
-until SIGTERM. On SIGTERM, deletes the cluster.
-
-Requires Docker to be available at test runtime. Must run outside the
-Bazel linux-sandbox:
-    tags = ["no-sandbox", "requires-docker"]
-
-Use with rules_itest:
-    itest_service(name = "k8s_svc", exe = ":my_cluster",
-                  health_check = ":my_cluster_health")
+integration tests via rules_itest. Internal rule — consumers should use
+the `kind_cluster` macro from `defs.bzl`, which picks the right
+kind/kubectl binary pair based on `k8s_version`.
 """,
     implementation = _kind_cluster_impl,
     executable = True,
@@ -164,9 +155,9 @@ Use with rules_itest:
                          "after the cluster is ready. Applied in listed order.",
             allow_files = [".yaml", ".yml"],
         ),
-        "_binary": attr.label(
-            doc       = "Platform-selected kind + kubectl binary.",
-            default   = Label("//:kind_default"),
+        "binary": attr.label(
+            doc       = "Platform-selected kind + kubectl binary. Set by the kind_cluster macro.",
+            mandatory = True,
             providers = [KindBinaryInfo],
         ),
         "_launcher": attr.label(

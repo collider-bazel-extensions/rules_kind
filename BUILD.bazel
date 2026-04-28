@@ -64,6 +64,41 @@ kind_binary(
 )
 
 # ---------------------------------------------------------------------------
+# kind 1.32 binary targets
+# ---------------------------------------------------------------------------
+
+kind_binary_files(
+    name    = "kind_1_32_linux_amd64_files",
+    bins    = ["@kind_1_32_linux_amd64//:all_files"],
+    version = "1.32",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_32_darwin_arm64_files",
+    bins    = ["@kind_1_32_darwin_arm64//:all_files"],
+    version = "1.32",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_32_darwin_amd64_files",
+    bins    = ["@kind_1_32_darwin_amd64//:all_files"],
+    version = "1.32",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary(
+    name = "kind_1_32",
+    binary = select({
+        ":_linux_amd64":   ":kind_1_32_linux_amd64_files",
+        ":_darwin_arm64":  ":kind_1_32_darwin_arm64_files",
+        ":_darwin_amd64":  ":kind_1_32_darwin_amd64_files",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
 # Default alias — update when adding newer versions
 # ---------------------------------------------------------------------------
 

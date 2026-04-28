@@ -64,26 +64,36 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.1.0")
+bazel_dep(name = "rules_kind", version = "0.1.2")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
 # Use host-installed kind + kubectl (auto-detects from PATH):
-kind.system(versions = ["1.29"])
+kind.system(versions = ["1.29", "1.32"])
 
 use_repo(kind,
     "kind_1_29_linux_amd64",
     "kind_1_29_darwin_arm64",
     "kind_1_29_darwin_amd64",
+    "kind_1_32_linux_amd64",
+    "kind_1_32_darwin_arm64",
+    "kind_1_32_darwin_amd64",
 )
 ```
+
+Supported `k8s_version` values:
+
+| Version | kindest/node | kind binary | kubectl | Notes |
+|---|---|---|---|---|
+| `1.29` | `v1.29.2` | `v0.22.0` | `1.29.2` | Default. runc 1.1.12 — see caveat below. |
+| `1.32` | `v1.32.2` | `v0.27.0` | `1.32.2` | runc 1.2.5. Required for workloads that bind-mount configmaps under rootless container engines on kernel 6.x (e.g. Cilium agent, kube-proxy). |
 
 ### WORKSPACE (legacy)
 
 ```python
 load("@rules_kind//:repositories.bzl", "kind_system_dependencies")
 
-kind_system_dependencies(versions = ["1.29"])
+kind_system_dependencies(versions = ["1.29", "1.32"])
 ```
 
 ### Sandbox bypass
