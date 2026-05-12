@@ -1,0 +1,11 @@
+# Static test images vendored at maintainer time.
+#
+# busybox.tar — produced by tools/fetch_busybox.sh from docker.io/library/busybox:stable
+# (linux/amd64). Used by tests/cluster_test.sh to avoid pulling at pod-create
+# time, which fails under rootless podman's slirp4netns/pasta networking
+# (DNS resolution to registry-1.docker.io times out from inside the kind
+# node's pod network). See DESIGN.md "Vendored test images".
+
+package(default_visibility = ["//tests:__pkg__"])
+
+exports_files(["busybox.tar"])

@@ -373,6 +373,16 @@ Failures surface as `bazel build` errors, not as runtime failures.
 
 ---
 
+## Vendored test images
+
+`tests/testdata/busybox.tar` is a hand-fetched `docker save`-format archive of `docker.io/library/busybox:stable` for `linux/amd64`, produced via `tools/fetch_busybox.sh` at maintainer time. The in-tree `cluster_test` fixture passes it via `kind_cluster.images = [...]` so the cluster preloads the image at boot; the pod then references `busybox:stable` with `--image-pull-policy=Never` and uses the preloaded copy — no runtime registry pull.
+
+**Why vendored** (vs. rules_oci's `oci_pull` + `oci_tarball`): for a single small test fixture, the rules_oci dep tree is heavyweight (rules_python, OCI lockfile, etc.). The 5MB committed tarball is permanent test infrastructure; the maintainer-rerun-when-stale flow matches `tools/render_*.sh` patterns elsewhere in the family. If rules_kind ever needs a second test image, that calculus tips toward rules_oci.
+
+**Why preload at all** (vs. let kind pull at runtime): rootless-podman in CI can't resolve `registry-1.docker.io` from inside the kind node's pod network — DNS lookups time out against the slirp4netns/pasta NAT. Issue #5 has the full reproducer. Preloading sidesteps the resolver entirely (and is faster on the docker path too).
+
+---
+
 ## Known limitations and non-goals
 
 - **Docker or podman required.** Tests must run with `tags = ["no-sandbox"]`

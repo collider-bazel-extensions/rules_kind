@@ -8,6 +8,14 @@ load("//:defs.bzl", "kind_cluster", "kind_health_check")
 kind_cluster(
     name        = "test_cluster",
     k8s_version = "1.29",
+    # Preload busybox:stable into the cluster at boot via
+    # `kind load image-archive`. cluster_test.sh schedules a pod
+    # against `busybox:stable` with --image-pull-policy=Never, so it
+    # uses the preloaded copy — no runtime registry pull, which
+    # avoids rootless-podman's slirp4netns DNS resolution failure
+    # to registry-1.docker.io. See #5 + DESIGN.md "Vendored test
+    # images".
+    images      = ["//tests/testdata:busybox.tar"],
     tags        = ["manual", "no-sandbox", "requires-docker"],
 )
 

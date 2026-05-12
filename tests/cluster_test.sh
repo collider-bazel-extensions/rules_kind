@@ -66,8 +66,15 @@ until "$KUBECTL" get serviceaccount default --kubeconfig "$KUBECONFIG" >/dev/nul
 done
 
 echo "scheduling test pod…"
+# --image-pull-policy=Never asserts the pod uses the cluster-preloaded
+# busybox:stable (loaded via test_cluster's `images = [...]` attr).
+# A runtime pull from registry-1.docker.io would fail under
+# rootless-podman in CI (slirp4netns/pasta DNS routing); the explicit
+# pull policy turns a future "forgot to preload" regression into an
+# immediate test failure instead of a silent fall-back.
 "$KUBECTL" run kind-test-pod \
     --image=busybox:stable \
+    --image-pull-policy=Never \
     --restart=Never \
     --kubeconfig "$KUBECONFIG" \
     -- sh -c 'echo hello'
