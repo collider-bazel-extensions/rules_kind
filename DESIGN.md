@@ -136,7 +136,9 @@ Both modes produce a repo named `kind_<k8s_version>_<platform>` (e.g.,
 
 ## Container runtime dependency
 
-kind requires Docker or podman. The launcher auto-detects which is available.
+kind requires Docker or podman **at test execution time**, not at build/analysis time. `bazel build //...` and `bazel test //... --test_tag_filters=-manual` succeed on Docker-less hosts; only a target that actually runs (e.g. `bazel test //my:kind_test`) trips the runtime probe.
+
+Pre-v0.1.4 the repo rule probed at analysis time via `_check_container_runtime`, which contaminated wildcard analysis on Docker-less hosts — tag filtering happens after analysis, so the analysis-time `fail()` bypassed the filter. v0.1.4 removed the analysis-time probe entirely; the launcher's existing execution-time probe is the single source of truth. Closes #6.
 
 ### Runtime detection
 
