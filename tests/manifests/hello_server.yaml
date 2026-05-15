@@ -12,6 +12,7 @@ spec:
   containers:
   - name: server
     image: busybox:stable
+    imagePullPolicy: Never
     command:
     - sh
     - -c

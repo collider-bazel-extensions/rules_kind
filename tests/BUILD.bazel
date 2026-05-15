@@ -32,6 +32,10 @@ kind_cluster(
     name      = "test_cluster_with_manifests",
     k8s_version = "1.29",
     manifests = glob(["manifests/*.yaml"]),
+    # hello_server.yaml schedules a busybox:stable pod with
+    # imagePullPolicy: Never. Preload the image so rootless-podman
+    # CI doesn't hit the registry DNS failure. See #5/#6.
+    images    = ["//tests/testdata:busybox.tar"],
     tags      = ["manual", "no-sandbox", "requires-docker"],
 )
 
@@ -105,6 +109,10 @@ kind_cluster(
     name      = "test_cluster_pod_to_pod",
     k8s_version = "1.29",
     manifests = ["manifests/hello_server.yaml"],
+    # Server pod + the test's `kubectl run` client pod both use
+    # busybox:stable with imagePullPolicy: Never. Preload so
+    # rootless-podman CI skips the registry pull. See #5/#6.
+    images    = ["//tests/testdata:busybox.tar"],
     tags      = ["manual", "no-sandbox", "requires-docker"],
 )
 

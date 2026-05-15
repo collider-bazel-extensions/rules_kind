@@ -88,6 +88,7 @@ echo "PASS: hello-server is Running"
 echo "running client pod…"
 "$KUBECTL" run hello-client \
     --image=busybox:stable \
+    --image-pull-policy=Never \
     --restart=Never \
     --namespace default \
     --kubeconfig "$KUBECONFIG" \
