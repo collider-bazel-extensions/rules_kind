@@ -3,28 +3,30 @@
 # kind_version + kubectl version pairs per Kubernetes minor version.
 # kind binaries: https://github.com/kubernetes-sigs/kind/releases
 # kubectl binaries: https://dl.k8s.io/release/v{k8s_version}/bin/{os}/{arch}/kubectl
-# SHA-256 values are placeholders — pin real values before using kind.version().
+# SHA-256 values are the published release sums (kind: <asset>.sha256sum on the
+# GitHub release; kubectl: <url>.sha256 on dl.k8s.io). Regenerate them with
+# tools/update_checksums.sh; //tests:checksums_test fails on an empty value.
 _KIND_VERSIONS = {
     "1.29": {
         "kind_version": "0.22.0",
         "kubectl_version": "1.29.2",
         "linux_amd64": {
             "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-linux-amd64",
-            "kind_sha256":   "",  # placeholder: run tools/update_checksums.sh
+            "kind_sha256":   "e4264d7ee07ca642fe52818d7c0ed188b193c214889dd055c929dbcb968d1f62",
             "kubectl_url":   "https://dl.k8s.io/release/v1.29.2/bin/linux/amd64/kubectl",
-            "kubectl_sha256": "",  # placeholder
+            "kubectl_sha256": "7816d067740f47f949be826ac76943167b7b3a38c4f0c18b902fffa8779a5afa",
         },
         "darwin_arm64": {
             "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-darwin-arm64",
-            "kind_sha256":   "",  # placeholder
+            "kind_sha256":   "c8dd3b287965150ae4db668294edc48229116e95d94620c306d8fae932ee633f",
             "kubectl_url":   "https://dl.k8s.io/release/v1.29.2/bin/darwin/arm64/kubectl",
-            "kubectl_sha256": "",  # placeholder
+            "kubectl_sha256": "ce030f86625df96560402573d86d4e6f4b8b956ca3e3b9df57cb8ccf2b9a540c",
         },
         "darwin_amd64": {
             "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-darwin-amd64",
-            "kind_sha256":   "",  # placeholder
+            "kind_sha256":   "28a9f7ad7fd77922c639e21c034d0f989b33402693f4f842099cd9185b144d20",
             "kubectl_url":   "https://dl.k8s.io/release/v1.29.2/bin/darwin/amd64/kubectl",
-            "kubectl_sha256": "",  # placeholder
+            "kubectl_sha256": "bb04d9450d9c9fa120956c5cc7c8dfaa700297038ff9c941741e730b02bbd1f3",
         },
     },
     # k8s 1.32 added in v0.1.2 to unblock rules_cilium. kindest/node:v1.32.2
@@ -103,8 +105,8 @@ def _kind_binary_repo_impl(rctx):
     for key in ["kind_sha256", "kubectl_sha256"]:
         if not info[key]:
             fail(
-                "SHA-256 for {} k8s {} on {} is a placeholder. " +
-                "Run tools/update_checksums.sh to pin real values.".format(
+                ("SHA-256 for {} k8s {} on {} is empty. " +
+                 "Run tools/update_checksums.sh to pin real values.").format(
                     key, version, platform),
             )
 
@@ -266,12 +268,20 @@ _system_tag = tag_class(
 )
 
 def _kind_extension(module_ctx):
+    # Each repo name is declared once. module_ctx.modules lists the root
+    # module first, so a consumer's kind.version(["1.29"]) takes precedence
+    # over the kind.system(["1.29", "1.32"]) rules_kind registers for itself;
+    # within one module, version() wins over system().
+    declared = {}
     for mod in module_ctx.modules:
         for tag in mod.tags.version:
             for version in tag.versions:
                 for platform in PLATFORMS:
                     repo_name = "kind_{}_{}".format(
                         version.replace(".", "_"), platform)
+                    if repo_name in declared:
+                        continue
+                    declared[repo_name] = True
                     kind_binary_repo(
                         name     = repo_name,
                         version  = version,
@@ -283,6 +293,9 @@ def _kind_extension(module_ctx):
                 for platform in PLATFORMS:
                     repo_name = "kind_{}_{}".format(
                         version.replace(".", "_"), platform)
+                    if repo_name in declared:
+                        continue
+                    declared[repo_name] = True
                     kind_system_binary_repo(
                         name     = repo_name,
                         version  = version,

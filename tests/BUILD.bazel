@@ -147,3 +147,15 @@ kind_health_check(
     name    = "test_cluster_1_32_health",
     cluster = ":test_cluster_1_32",
 )
+
+# ---------------------------------------------------------------------------
+# checksums_test — no Docker, no network.
+# Fails if any _KIND_VERSIONS entry carries an empty or malformed SHA-256.
+# Regenerate the pins with tools/update_checksums.sh.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name = "checksums_test",
+    srcs = ["checksums_test.sh"],
+    data = ["//:extensions.bzl"],
+)

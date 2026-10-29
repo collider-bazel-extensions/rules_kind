@@ -50,10 +50,13 @@ jobs:
       - name: bazel test //tests:...
         # The cluster-using tests are `manual`-tagged so they don't run by
         # accident on a developer box without Docker. CI lists them by name
-        # to opt in. `kind_health_check_test` is the one untagged test
-        # (no runtime needed) — included for parity across both jobs.
+        # to opt in. `kind_health_check_test` and `checksums_test` are
+        # untagged (no runtime needed) — included for parity across both
+        # jobs. `checksums_test` fails on an empty or malformed SHA-256 in
+        # extensions.bzl's _KIND_VERSIONS table.
         run: |
           bazel test \
+            //tests:checksums_test \
             //tests:kind_health_check_test \
             //tests:kind_server_test \
             //tests:cluster_test \

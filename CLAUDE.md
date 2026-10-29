@@ -35,7 +35,11 @@ rules_kind/
     ├── cluster_test.sh              # Basic cluster connectivity + pod scheduling
     ├── manifest_test.sh             # Manifest applied before env file written
     ├── kind_health_check_test.sh    # Health check behavior
-    └── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
+    ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
+    └── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
+tools/
+├── fetch_busybox.sh          # Regenerate tests/testdata/busybox.tar
+└── update_checksums.sh       # Re-pin _KIND_VERSIONS SHA-256s from published sums
 ```
 
 ## Key concepts
@@ -338,5 +342,8 @@ All test shell scripts must:
   name in different packages would write to the same `$TEST_TMPDIR/<name>.env`.
   Use unique target names within a test run.
 - **Windows not supported** (no pre-built binary source; PRs welcome).
-- **Downloaded binary SHA-256 checksums** are placeholder values. Pin real
-  values before using `kind.version()`.
+- **Downloaded binary SHA-256 checksums** are the published release sums
+  (kind `<asset>.sha256sum`, kubectl `<url>.sha256`), cross-checked against
+  the downloaded binaries. Regenerate them with `tools/update_checksums.sh`
+  (`--check` verifies without writing); `//tests:checksums_test` fails on an
+  empty or malformed value.
