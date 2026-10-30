@@ -57,6 +57,75 @@ _KIND_VERSIONS = {
             "kubectl_sha256": "371b8fbd481e1e9052ace16d9c243e92618a2ea9a18c1aaf235d35fef20c0c32",
         },
     },
+    # k8s 1.35-1.37 added in v0.2.0: the supported Kubernetes minors as of
+    # 2026-10 (1.29 and 1.32 are upstream EOL). All three use kind v0.33.0,
+    # whose release notes list the matching kindest/node images.
+    "1.35": {
+        "kind_version": "0.33.0",
+        "kubectl_version": "1.35.10",
+        "linux_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64",
+            "kind_sha256":   "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.35.10/bin/linux/amd64/kubectl",
+            "kubectl_sha256": "c49a28f1f4efc4d475ed05f47f2ce8e563bf7bef69ed77fe1b924ea6d83b6327",
+        },
+        "darwin_arm64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64",
+            "kind_sha256":   "0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.35.10/bin/darwin/arm64/kubectl",
+            "kubectl_sha256": "77ec066f3404edb81760865c9cd812d03c25e9a89aa0349fd3c1aa60bd5fb068",
+        },
+        "darwin_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-amd64",
+            "kind_sha256":   "5a99f26f57246dc9319dd294803313197a0f34d33c525b3ea8b655db5916ece0",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.35.10/bin/darwin/amd64/kubectl",
+            "kubectl_sha256": "4787e20d9029871845d8a57bf56f533870f5d98d9cf3b82b6f5e2ad5eaeee3a3",
+        },
+    },
+    "1.36": {
+        "kind_version": "0.33.0",
+        "kubectl_version": "1.36.6",
+        "linux_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64",
+            "kind_sha256":   "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl",
+            "kubectl_sha256": "29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634",
+        },
+        "darwin_arm64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64",
+            "kind_sha256":   "0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.36.6/bin/darwin/arm64/kubectl",
+            "kubectl_sha256": "1cf735c3d35ccfec28d0618784cb06a4614d2c42aade28b6be0eab76a2ffb623",
+        },
+        "darwin_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-amd64",
+            "kind_sha256":   "5a99f26f57246dc9319dd294803313197a0f34d33c525b3ea8b655db5916ece0",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.36.6/bin/darwin/amd64/kubectl",
+            "kubectl_sha256": "2e22d382f2423c88d9d076246f860bb3d5c743dd279ca63e113474bb88382426",
+        },
+    },
+    "1.37": {
+        "kind_version": "0.33.0",
+        "kubectl_version": "1.37.2",
+        "linux_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64",
+            "kind_sha256":   "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.37.2/bin/linux/amd64/kubectl",
+            "kubectl_sha256": "c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4",
+        },
+        "darwin_arm64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64",
+            "kind_sha256":   "0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.37.2/bin/darwin/arm64/kubectl",
+            "kubectl_sha256": "55701af0d51815ee335f240e48acf0959c3c23017ed3fa816e880c4a92bae581",
+        },
+        "darwin_amd64": {
+            "kind_url":      "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-amd64",
+            "kind_sha256":   "5a99f26f57246dc9319dd294803313197a0f34d33c525b3ea8b655db5916ece0",
+            "kubectl_url":   "https://dl.k8s.io/release/v1.37.2/bin/darwin/amd64/kubectl",
+            "kubectl_sha256": "88379aff5c8111de6be0a394adffba2819e44cde269f3ab23cef76de1a48eaa8",
+        },
+    },
 }
 
 PLATFORMS = ["linux_amd64", "darwin_arm64", "darwin_amd64"]

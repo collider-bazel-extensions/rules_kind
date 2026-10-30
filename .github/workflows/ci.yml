@@ -54,6 +54,9 @@ jobs:
         # untagged (no runtime needed) — included for parity across both
         # jobs. `checksums_test` fails on an empty or malformed SHA-256 in
         # extensions.bzl's _KIND_VERSIONS table.
+        # --local_test_jobs=2: eight cluster tests starting at once on a
+        # 4-vCPU runner made `docker info` take >5 s and three launchers
+        # misreported "no container runtime" (PR #11's first run).
         run: |
           bazel test \
             //tests:checksums_test \
@@ -63,7 +66,11 @@ jobs:
             //tests:cluster_test \
             //tests:manifest_test \
             //tests:pod_to_pod_test \
-            --test_output=errors
+            //tests:k8s_1_35_version_test \
+            //tests:k8s_1_36_version_test \
+            //tests:k8s_1_37_version_test \
+            --test_output=errors \
+            --local_test_jobs=2
 
       - name: Upload test logs on failure
         if: failure()

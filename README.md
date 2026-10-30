@@ -59,31 +59,29 @@ Install kind:
 brew install kind
 
 # Linux
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
 chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ```
 
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.1.6")
+bazel_dep(name = "rules_kind", version = "0.2.0")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
 # Download pinned, checksummed kind + kubectl (hermetic; no host install):
-kind.version(versions = ["1.29", "1.32"])
+kind.version(versions = ["1.35"])
 # ...or use host-installed kind + kubectl (auto-detects from PATH):
-# kind.system(versions = ["1.29", "1.32"])
-# With no tag at all, rules_kind's own kind.system(["1.29", "1.32"]) applies.
+# kind.system(versions = ["1.35"])
+# With no tag at all, rules_kind's own registrations apply:
+# kind.version(["1.35", "1.36", "1.37"]) and kind.system(["1.29", "1.32"]).
 # A root-module tag takes precedence for the versions it names (v0.1.5+).
 
 use_repo(kind,
-    "kind_1_29_linux_amd64",
-    "kind_1_29_darwin_arm64",
-    "kind_1_29_darwin_amd64",
-    "kind_1_32_linux_amd64",
-    "kind_1_32_darwin_arm64",
-    "kind_1_32_darwin_amd64",
+    "kind_1_35_linux_amd64",
+    "kind_1_35_darwin_arm64",
+    "kind_1_35_darwin_amd64",
 )
 ```
 
@@ -91,8 +89,16 @@ Supported `k8s_version` values:
 
 | Version | kindest/node | kind binary | kubectl | Notes |
 |---|---|---|---|---|
-| `1.29` | `v1.29.2` | `v0.22.0` | `1.29.2` | Default. runc 1.1.12 — see caveat below. |
-| `1.32` | `v1.32.2` | `v0.27.0` | `1.32.2` | runc 1.2.5. Required for workloads that bind-mount configmaps under rootless container engines on kernel 6.x (e.g. Cilium agent, kube-proxy). |
+| `1.35` | `v1.35.8` | `v0.33.0` | `1.35.10` | **Default** (v0.2.0+). Oldest upstream-supported minor (EOL 2027-02-28). |
+| `1.36` | `v1.36.4` | `v0.33.0` | `1.36.6` | EOL 2027-06-28. |
+| `1.37` | `v1.37.0` | `v0.33.0` | `1.37.2` | Newest. EOL 2027-10-28. |
+| `1.32` | `v1.32.2` | `v0.27.0` | `1.32.2` | **Upstream EOL (2026-02-28)**; kept for existing pins. runc 1.2.5. |
+| `1.29` | `v1.29.2` | `v0.22.0` | `1.29.2` | **Upstream EOL (2025-02-28)**; kept for existing pins. Default before v0.2.0. runc 1.1.12 — see caveat below. |
+
+Every `kindest/node` image is pinned by the digest from its kind release's
+notes (`private/cluster.bzl`), since kind only guarantees images built for its
+own release. Use a `kind.system()` host kind only for 1.29 / 1.32, or with a
+host kind matching the table.
 
 ### WORKSPACE (legacy)
 
@@ -132,7 +138,7 @@ load("@rules_itest//:defs.bzl", "itest_service", "service_test")
 
 kind_cluster(
     name        = "k8s",
-    k8s_version = "1.29",
+    k8s_version = "1.35",
     tags        = ["no-sandbox", "requires-docker"],
 )
 
@@ -181,7 +187,7 @@ load("@rules_itest//:defs.bzl", "itest_service", "service_test")
 
 kind_cluster(
     name        = "k8s",
-    k8s_version = "1.29",
+    k8s_version = "1.35",
     images      = ["//cmd/operator:image_tar"],   # rules_oci oci_tarball target
     manifests   = glob(["config/crd/*.yaml"]),
     tags        = ["no-sandbox", "requires-docker"],
@@ -295,7 +301,7 @@ spec:
 # tests/BUILD.bazel
 kind_cluster(
     name      = "pod_to_pod_cluster",
-    k8s_version = "1.29",
+    k8s_version = "1.35",
     manifests = ["manifests/hello_server.yaml"],   # server deployed at startup
     tags      = ["no-sandbox", "requires-docker"],
 )
@@ -383,7 +389,7 @@ pg_health_check(name = "db_health", server = ":db")
 
 kind_cluster(
     name      = "k8s",
-    k8s_version = "1.29",
+    k8s_version = "1.35",
     images    = ["//cmd/operator:image_tar"],
     manifests = glob(["config/**/*.yaml"]),
     tags      = ["no-sandbox", "requires-docker"],
@@ -446,7 +452,7 @@ load("@rules_kind//:defs.bzl",
 # Long-running kind cluster for rules_itest multi-service tests.
 kind_cluster(
     name        = "k8s",
-    k8s_version = "1.29",          # optional, default "1.29"
+    k8s_version = "1.35",          # optional, default "1.35"
     config      = ":kind_config",  # optional: kind config YAML file (Label)
     images      = [                # optional: Docker image tarballs to pre-load
         "//myapp:server_image_tar",
@@ -467,7 +473,7 @@ kind_health_check(
 
 | Attribute     | Type          | Default  | Description |
 |---------------|---------------|----------|-------------|
-| `k8s_version` | string        | `"1.29"` | Kubernetes minor version. Selects the `kindest/node` image. |
+| `k8s_version` | string        | `"1.35"` | Kubernetes minor version: `"1.35"`, `"1.36"`, `"1.37"`, or the EOL `"1.32"` / `"1.29"`. Selects the digest-pinned `kindest/node` image and the kind + kubectl pair. Default was `"1.29"` before v0.2.0. |
 | `config`      | label         | `None`   | kind config YAML file. Controls node count, port mappings, feature gates. |
 | `images`      | label_list    | `[]`     | Docker image tarball targets to pre-load via `kind load image-archive`. |
 | `manifests`   | label_list    | `[]`     | YAML files to apply via `kubectl apply -f` after cluster is ready. |
@@ -486,7 +492,7 @@ kind_health_check(
 ## Integration with rules_itest
 
 ```python
-kind_cluster(name = "k8s", k8s_version = "1.29", images = [":app_image_tar"])
+kind_cluster(name = "k8s", k8s_version = "1.35", images = [":app_image_tar"])
 kind_health_check(name = "k8s_health", cluster = ":k8s")
 
 itest_service(name = "k8s_svc", exe = ":k8s", health_check = ":k8s_health")

@@ -124,8 +124,12 @@ downloaded binaries by `tools/update_checksums.sh`. `//tests:checksums_test`
 fails on an empty or malformed value, and `_kind_binary_repo` fails on an empty
 one at fetch time.
 
-rules_kind's own `MODULE.bazel` registers `kind.system(["1.29", "1.32"])`, so a
-consumer that declares no tag gets host binaries. Each `kind_<ver>_<platform>`
+rules_kind's own `MODULE.bazel` registers `kind.version(["1.35", "1.36",
+"1.37"])` (pinned kind v0.33.0 downloads) and `kind.system(["1.29", "1.32"])`,
+so a consumer that declares no tag gets hermetic binaries for the supported
+minors and host binaries for the EOL ones. The new minors are not system-mode:
+their node images are built for kind v0.33.0 and a host kind of another version
+is not a safe stand-in. Each `kind_<ver>_<platform>`
 repo is declared once: the extension visits the root module first, so a
 consumer's `kind.version(["1.29"])` replaces the system repos for 1.29 (since
 v0.1.5; earlier versions failed on the duplicate repo name).
@@ -210,7 +214,7 @@ with the automatic systemd-run re-execution.
 
 ```
 1. Generate cluster name: kind-<uuid[:12]>
-2. kind create cluster --name <name> [--config <config_file>] [--image kindest/node:v{k8s_version}]
+2. kind create cluster --name <name> [--config <config_file>] [--image <digest-pinned kindest/node image for k8s_version>]
 3. kind get kubeconfig --name <name> > $TEST_TMPDIR/kubeconfig
 4. Poll kubectl cluster-info until API server responds (max 120 s)
 5. For each image in images[]:
@@ -297,7 +301,7 @@ protocol to `pg_health_check` and `kubernetes_health_check`.
 
 | Attribute    | Type         | Default   | Description |
 |---|---|---|---|
-| `k8s_version` | string      | `"1.29"`  | Kubernetes minor version. Selects the `kindest/node` image and the kind+kubectl binary pair. Supported: `"1.29"`, `"1.32"`. v0.1.2 added `"1.32"` because `kindest/node:v1.32.2` ships runc 1.2.5, which fixes a bind-mount-remount-RO EPERM bug under rootless container engines + kernel 6.x that breaks workloads such as `kube-proxy` and Cilium's agent on the older 1.29.2 image (runc 1.1.12). |
+| `k8s_version` | string      | `"1.35"`  | Kubernetes minor version. Selects the digest-pinned `kindest/node` image and the kind+kubectl binary pair. Supported: `"1.35"`, `"1.36"`, `"1.37"`; EOL but kept: `"1.32"`, `"1.29"`. |
 | `config`      | label        | `None`    | kind config YAML file. Controls node count, port mappings, feature gates. |
 | `images`      | label\_list  | `[]`      | Container image targets to pre-load into the cluster via `kind load docker-image`. |
 | `manifests`   | label        | `None`    | `kubernetes_manifest` target applied after the cluster is ready. |
@@ -333,7 +337,8 @@ instead.
   "workspace":      "<workspace_name>",
   "kind_bin":       "<runfile path>",
   "kubectl_bin":    "<runfile path>",
-  "k8s_version":   "1.29",
+  "k8s_version":   "1.35",
+  "node_image":    "kindest/node:v1.35.8@sha256:07b2…",
   "kind_config":    "<runfile path>",
   "images":         ["myapp/server:test", "myapp/worker:test"],
   "manifest_files": ["config/crd/foo.yaml", "config/rbac/role.yaml"]
@@ -349,7 +354,7 @@ instead.
 `kind_cluster` and `kind_health_check` slot directly into rules_itest:
 
 ```python
-kind_cluster(name = "k8s", k8s_version = "1.29", images = [":app_image"])
+kind_cluster(name = "k8s", k8s_version = "1.35", images = [":app_image"])
 kind_health_check(name = "k8s_health", cluster = ":k8s")
 
 itest_service(name = "k8s_svc", exe = ":k8s", health_check = ":k8s_health")

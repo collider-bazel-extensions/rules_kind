@@ -94,6 +94,12 @@ def _run(args, env=None, check=True, **kwargs):
 # Container runtime detection
 # ---------------------------------------------------------------------------
 
+# `docker info` / `podman info` can take well over 5 s on a loaded host
+# (several kind clusters starting at once on a CI runner); a short timeout
+# misreports a busy runtime as a missing one.
+_RUNTIME_PROBE_TIMEOUT_S = 30
+
+
 def _detect_runtime():
     """Return ("docker", env_extras) or ("podman", env_extras).
 
@@ -107,7 +113,7 @@ def _detect_runtime():
     try:
         result = subprocess.run(
             ["docker", "info"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=_RUNTIME_PROBE_TIMEOUT_S,
         )
         if result.returncode == 0:
             _log("using Docker as container runtime")
@@ -119,13 +125,13 @@ def _detect_runtime():
     except FileNotFoundError:
         docker_problem = "docker binary not found in PATH"
     except subprocess.TimeoutExpired:
-        docker_problem = "docker info timed out after 5 s (daemon hung?)"
+        docker_problem = f"docker info timed out after {_RUNTIME_PROBE_TIMEOUT_S} s (daemon hung?)"
 
     # Fall back to podman.
     try:
         result = subprocess.run(
             ["podman", "--runtime", "/usr/bin/crun", "info"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=_RUNTIME_PROBE_TIMEOUT_S,
         )
         if result.returncode == 0:
             _log("Docker unavailable, using podman as container runtime")
@@ -137,7 +143,7 @@ def _detect_runtime():
     except FileNotFoundError:
         podman_problem = "podman binary not found in PATH"
     except subprocess.TimeoutExpired:
-        podman_problem = "podman info timed out after 5 s"
+        podman_problem = f"podman info timed out after {_RUNTIME_PROBE_TIMEOUT_S} s"
 
     raise RuntimeError(
         "rules_kind requires a container runtime (Docker or podman) to run\n"
@@ -236,15 +242,15 @@ def _kind_env(runtime_env):
     return env
 
 
-def _create_cluster(kind_bin, cluster_name, k8s_version, kind_config, env):
+def _create_cluster(kind_bin, cluster_name, node_image, kind_config, env):
     cmd = [
         kind_bin, "create", "cluster",
         "--name", cluster_name,
-        "--image", f"kindest/node:v{k8s_version}",
+        "--image", node_image,
     ]
     if kind_config:
         cmd += ["--config", kind_config]
-    _log(f"creating cluster {cluster_name} (k8s v{k8s_version})…")
+    _log(f"creating cluster {cluster_name} ({node_image})…")
     _run(cmd, env=env)
     _log(f"cluster {cluster_name} created")
 
@@ -419,8 +425,7 @@ def main():
     _ensure_executable(kind_bin)
     _ensure_executable(kubectl_bin)
 
-    k8s_version      = m.get("k8s_version", "1.29")
-    k8s_node_version = m.get("k8s_node_version", k8s_version)
+    node_image = m["node_image"]
 
     kind_config = None
     if "kind_config" in m:
@@ -495,7 +500,7 @@ def main():
     signal.signal(signal.SIGINT,  _shutdown)
 
     try:
-        _create_cluster(kind_bin, cluster_name, k8s_node_version, kind_config, env)
+        _create_cluster(kind_bin, cluster_name, node_image, kind_config, env)
         _get_kubeconfig(kind_bin, cluster_name, kubeconfig, env)
         _wait_apiserver_ready(kubectl_bin, kubeconfig)
         apiserver_url = _get_api_server_url(kubectl_bin, kubeconfig)

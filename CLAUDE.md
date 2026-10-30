@@ -37,6 +37,7 @@ rules_kind/
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
     ├── cluster_cleanup_test.sh      # Cluster deleted on SIGKILL / orphaning; keep switch
+    ├── k8s_version_test.sh          # Per-minor (1.35/1.36/1.37): server gitVersion + kubectl minor
     └── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
 tools/
 ├── fetch_busybox.sh          # Regenerate tests/testdata/busybox.tar
@@ -93,7 +94,8 @@ into a test binary.
 
 The launcher auto-detects the container runtime at startup:
 
-1. Tries `docker info` — uses Docker if available.
+1. Tries `docker info` — uses Docker if available. Each probe has a 30 s
+   timeout (a busy runtime can take well over 5 s to answer).
 2. Falls back to `podman --runtime /usr/bin/crun info` — uses podman with
    `KIND_EXPERIMENTAL_PROVIDER=podman`.
 3. Fails with a clear error if neither is available.
@@ -208,7 +210,8 @@ sandbox. Only the test execution step needs sandbox bypass.
   "kind_bin":       "<runfile path>",
   "kubectl_bin":    "<runfile path>",
   "kind_config":    "<runfile path>",
-  "k8s_version":   "1.29",
+  "k8s_version":   "1.35",
+  "node_image":    "kindest/node:v1.35.8@sha256:…",
   "images":         ["myapp/server:test", "myapp/worker:test"],
   "manifest_files": ["config/crd/foo.yaml", "config/rbac/role.yaml"]
 }
@@ -227,7 +230,7 @@ load("@rules_kind//:defs.bzl",
 # Long-running kind cluster for rules_itest multi-service tests.
 kind_cluster(
     name        = "k8s",
-    k8s_version = "1.29",          # optional, default "1.29"
+    k8s_version = "1.35",          # optional, default "1.35" (1.36, 1.37; EOL 1.32, 1.29)
     config      = ":kind_config",  # optional: kind config file (Label)
     images      = [                # optional: Docker images to pre-load
         "//myapp:server_image",
@@ -261,12 +264,12 @@ bazel_dep(name = "rules_kind", version = "0.1.0")
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
 # Use host-installed kind + kubectl (auto-detects from PATH):
-kind.system(versions = ["1.29"])
+kind.version(versions = ["1.35"])
 
 use_repo(kind,
-    "kind_1_29_linux_amd64",
-    "kind_1_29_darwin_arm64",
-    "kind_1_29_darwin_amd64",
+    "kind_1_35_linux_amd64",
+    "kind_1_35_darwin_arm64",
+    "kind_1_35_darwin_amd64",
 )
 ```
 
@@ -293,7 +296,7 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-10-30)
 
-All 7 tests pass. The 5 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 10 tests pass. The 8 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
@@ -304,6 +307,9 @@ All 7 tests pass. The 5 cluster tests use podman (rootless Docker alternative) w
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
 | `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
 | `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | PASSED |
+| `//tests:k8s_1_35_version_test`  | 1.35 cluster: server `v1.35.8`, kubectl 1.35, nodes Ready (kind v0.33.0)          | PASSED |
+| `//tests:k8s_1_36_version_test`  | 1.36 cluster: server `v1.36.4`, kubectl 1.36, nodes Ready (kind v0.33.0)          | PASSED |
+| `//tests:k8s_1_37_version_test`  | 1.37 cluster: server `v1.37.0`, kubectl 1.37, nodes Ready (kind v0.33.0)          | PASSED |
 
 To run cluster tests (requires Docker or podman):
 
