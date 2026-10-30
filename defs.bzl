@@ -28,9 +28,12 @@ kind_health_check = _kind_health_check
 _BINARY_BY_VERSION = {
     "1.29": "@rules_kind//:kind_1_29",
     "1.32": "@rules_kind//:kind_1_32",
+    "1.35": "@rules_kind//:kind_1_35",
+    "1.36": "@rules_kind//:kind_1_36",
+    "1.37": "@rules_kind//:kind_1_37",
 }
 
-def kind_cluster(name, k8s_version = "1.29", **kwargs):
+def kind_cluster(name, k8s_version = "1.35", **kwargs):
     """Long-running kind cluster for rules_itest integration tests.
 
     Picks the right kind+kubectl binary pair for `k8s_version` and forwards to

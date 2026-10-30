@@ -164,6 +164,38 @@ kind_health_check(
 )
 
 # ---------------------------------------------------------------------------
+# k8s 1.35 / 1.36 / 1.37 — boot a cluster per supported minor (kind v0.33.0,
+# hermetic kind.version() binaries) and check the API server's gitVersion
+# matches the digest-pinned kindest/node image and kubectl matches the minor.
+# ---------------------------------------------------------------------------
+
+[
+    kind_cluster(
+        name        = "test_cluster_" + minor.replace(".", "_"),
+        k8s_version = minor,
+        tags        = ["manual", "no-sandbox", "requires-docker"],
+    )
+    for minor in ["1.35", "1.36", "1.37"]
+]
+
+[
+    sh_test(
+        name    = "k8s_{}_version_test".format(minor.replace(".", "_")),
+        srcs    = ["k8s_version_test.sh"],
+        args    = ["test_cluster_" + minor.replace(".", "_"), server],
+        data    = [":test_cluster_" + minor.replace(".", "_")],
+        size    = "large",
+        timeout = "long",
+        tags    = ["manual", "no-sandbox", "requires-docker"],
+    )
+    for minor, server in [
+        ("1.35", "v1.35.8"),
+        ("1.36", "v1.36.4"),
+        ("1.37", "v1.37.0"),
+    ]
+]
+
+# ---------------------------------------------------------------------------
 # checksums_test — no Docker, no network.
 # Fails if any _KIND_VERSIONS entry carries an empty or malformed SHA-256.
 # Regenerate the pins with tools/update_checksums.sh.

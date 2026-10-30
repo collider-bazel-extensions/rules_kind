@@ -63,6 +63,9 @@ jobs:
             //tests:cluster_test \
             //tests:manifest_test \
             //tests:pod_to_pod_test \
+            //tests:k8s_1_35_version_test \
+            //tests:k8s_1_36_version_test \
+            //tests:k8s_1_37_version_test \
             --test_output=errors
 
       - name: Upload test logs on failure

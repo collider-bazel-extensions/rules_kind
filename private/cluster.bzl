@@ -13,16 +13,24 @@ def _json_str_list(lst):
     return "[" + ", ".join([_json_str(s) for s in lst]) + "]"
 
 # ---------------------------------------------------------------------------
-# Supported k8s versions (for analysis-time validation) and the corresponding
-# full kindest/node image tag to pass to kind create cluster --image.
+# Supported k8s versions (for analysis-time validation) and the kindest/node
+# image passed to `kind create cluster --image`. Each image is pinned by the
+# digest listed in the release notes of the kind version extensions.bzl pairs
+# with that minor: kind only guarantees images built for its own release.
 # ---------------------------------------------------------------------------
 
-_KINDEST_NODE_VERSIONS = {
-    "1.29": "1.29.2",
-    "1.32": "1.32.2",
+_KINDEST_NODE_IMAGES = {
+    # kind v0.22.0 (upstream EOL 2025-02-28)
+    "1.29": "kindest/node:v1.29.2@sha256:51a1434a5397193442f0be2a297b488b6c919ce8a3931be0ce822606ea5ca245",
+    # kind v0.27.0 (upstream EOL 2026-02-28)
+    "1.32": "kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f",
+    # kind v0.33.0
+    "1.35": "kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0",
+    "1.36": "kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed",
+    "1.37": "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5",
 }
 
-_SUPPORTED_VERSIONS = list(_KINDEST_NODE_VERSIONS.keys())
+_SUPPORTED_VERSIONS = list(_KINDEST_NODE_IMAGES.keys())
 
 # ---------------------------------------------------------------------------
 # kind_cluster
@@ -52,14 +60,14 @@ def _kind_cluster_impl(ctx):
         kind_config_short = ctx.file.config.short_path
 
     # Build the launcher manifest JSON.
-    node_version = _KINDEST_NODE_VERSIONS[ctx.attr.k8s_version]
+    node_image = _KINDEST_NODE_IMAGES[ctx.attr.k8s_version]
 
     fields = [
         '  "workspace":        ' + _json_str(ctx.workspace_name),
         '  "kind_bin":         ' + _json_str(binary_info.kind.short_path),
         '  "kubectl_bin":      ' + _json_str(binary_info.kubectl.short_path),
         '  "k8s_version":      ' + _json_str(ctx.attr.k8s_version),
-        '  "k8s_node_version": ' + _json_str(node_version),
+        '  "node_image":       ' + _json_str(node_image),
     ]
     if kind_config_short:
         fields.append('  "kind_config": ' + _json_str(kind_config_short))
@@ -138,7 +146,7 @@ kind/kubectl binary pair based on `k8s_version`.
     attrs = {
         "k8s_version": attr.string(
             doc     = "Kubernetes minor version. Selects the kindest/node image tag.",
-            default = "1.29",
+            default = "1.35",
         ),
         "config": attr.label(
             doc               = "Optional kind config YAML file (controls node count, port mappings, etc.).",

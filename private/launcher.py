@@ -236,15 +236,15 @@ def _kind_env(runtime_env):
     return env
 
 
-def _create_cluster(kind_bin, cluster_name, k8s_version, kind_config, env):
+def _create_cluster(kind_bin, cluster_name, node_image, kind_config, env):
     cmd = [
         kind_bin, "create", "cluster",
         "--name", cluster_name,
-        "--image", f"kindest/node:v{k8s_version}",
+        "--image", node_image,
     ]
     if kind_config:
         cmd += ["--config", kind_config]
-    _log(f"creating cluster {cluster_name} (k8s v{k8s_version})…")
+    _log(f"creating cluster {cluster_name} ({node_image})…")
     _run(cmd, env=env)
     _log(f"cluster {cluster_name} created")
 
@@ -419,8 +419,7 @@ def main():
     _ensure_executable(kind_bin)
     _ensure_executable(kubectl_bin)
 
-    k8s_version      = m.get("k8s_version", "1.29")
-    k8s_node_version = m.get("k8s_node_version", k8s_version)
+    node_image = m["node_image"]
 
     kind_config = None
     if "kind_config" in m:
@@ -495,7 +494,7 @@ def main():
     signal.signal(signal.SIGINT,  _shutdown)
 
     try:
-        _create_cluster(kind_bin, cluster_name, k8s_node_version, kind_config, env)
+        _create_cluster(kind_bin, cluster_name, node_image, kind_config, env)
         _get_kubeconfig(kind_bin, cluster_name, kubeconfig, env)
         _wait_apiserver_ready(kubectl_bin, kubeconfig)
         apiserver_url = _get_api_server_url(kubectl_bin, kubeconfig)

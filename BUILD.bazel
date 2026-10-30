@@ -102,11 +102,116 @@ kind_binary(
 )
 
 # ---------------------------------------------------------------------------
+# kind 1.35 binary targets
+# ---------------------------------------------------------------------------
+
+kind_binary_files(
+    name    = "kind_1_35_linux_amd64_files",
+    bins    = ["@kind_1_35_linux_amd64//:all_files"],
+    version = "1.35",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_35_darwin_arm64_files",
+    bins    = ["@kind_1_35_darwin_arm64//:all_files"],
+    version = "1.35",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_35_darwin_amd64_files",
+    bins    = ["@kind_1_35_darwin_amd64//:all_files"],
+    version = "1.35",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary(
+    name = "kind_1_35",
+    binary = select({
+        ":_linux_amd64":   ":kind_1_35_linux_amd64_files",
+        ":_darwin_arm64":  ":kind_1_35_darwin_arm64_files",
+        ":_darwin_amd64":  ":kind_1_35_darwin_amd64_files",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
+# kind 1.36 binary targets
+# ---------------------------------------------------------------------------
+
+kind_binary_files(
+    name    = "kind_1_36_linux_amd64_files",
+    bins    = ["@kind_1_36_linux_amd64//:all_files"],
+    version = "1.36",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_36_darwin_arm64_files",
+    bins    = ["@kind_1_36_darwin_arm64//:all_files"],
+    version = "1.36",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_36_darwin_amd64_files",
+    bins    = ["@kind_1_36_darwin_amd64//:all_files"],
+    version = "1.36",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary(
+    name = "kind_1_36",
+    binary = select({
+        ":_linux_amd64":   ":kind_1_36_linux_amd64_files",
+        ":_darwin_arm64":  ":kind_1_36_darwin_arm64_files",
+        ":_darwin_amd64":  ":kind_1_36_darwin_amd64_files",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
+# kind 1.37 binary targets
+# ---------------------------------------------------------------------------
+
+kind_binary_files(
+    name    = "kind_1_37_linux_amd64_files",
+    bins    = ["@kind_1_37_linux_amd64//:all_files"],
+    version = "1.37",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_37_darwin_arm64_files",
+    bins    = ["@kind_1_37_darwin_arm64//:all_files"],
+    version = "1.37",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary_files(
+    name    = "kind_1_37_darwin_amd64_files",
+    bins    = ["@kind_1_37_darwin_amd64//:all_files"],
+    version = "1.37",
+    visibility = ["//visibility:private"],
+)
+
+kind_binary(
+    name = "kind_1_37",
+    binary = select({
+        ":_linux_amd64":   ":kind_1_37_linux_amd64_files",
+        ":_darwin_arm64":  ":kind_1_37_darwin_arm64_files",
+        ":_darwin_amd64":  ":kind_1_37_darwin_amd64_files",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
 # Default alias — update when adding newer versions
 # ---------------------------------------------------------------------------
 
 alias(
     name       = "kind_default",
-    actual     = ":kind_1_29",
+    actual     = ":kind_1_35",
     visibility = ["//visibility:public"],
 )
