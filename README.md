@@ -66,7 +66,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.1.5")
+bazel_dep(name = "rules_kind", version = "0.1.6")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 

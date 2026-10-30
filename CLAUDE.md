@@ -293,10 +293,11 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-10-30)
 
-All 6 tests pass. The 5 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 7 tests pass. The 5 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
+| `//tests:checksums_test`           | every `_KIND_VERSIONS` entry has a 64-hex SHA-256 (no network, no runtime)        | PASSED |
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
 | `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL and after parent exit; keep switch works   | PASSED |
