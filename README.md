@@ -64,12 +64,16 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.1.4")
+bazel_dep(name = "rules_kind", version = "0.1.5")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
-# Use host-installed kind + kubectl (auto-detects from PATH):
-kind.system(versions = ["1.29", "1.32"])
+# Download pinned, checksummed kind + kubectl (hermetic; no host install):
+kind.version(versions = ["1.29", "1.32"])
+# ...or use host-installed kind + kubectl (auto-detects from PATH):
+# kind.system(versions = ["1.29", "1.32"])
+# With no tag at all, rules_kind's own kind.system(["1.29", "1.32"]) applies.
+# A root-module tag takes precedence for the versions it names (v0.1.5+).
 
 use_repo(kind,
     "kind_1_29_linux_amd64",
@@ -569,5 +573,8 @@ systemd-run --scope --user --property=Delegate=yes -- \
   name in different packages would write to the same `$TEST_TMPDIR/<name>.env`.
   Use unique target names within a test run.
 - **Windows not supported** (no pre-built binary source; PRs welcome).
-- **Downloaded binary SHA-256 checksums** are placeholder values. Pin real
-  values before using `kind.version()`.
+- **Downloaded binary SHA-256 checksums** are the published release sums
+  (kind `<asset>.sha256sum`, kubectl `<url>.sha256`), cross-checked against
+  the downloaded binaries. Regenerate them with `tools/update_checksums.sh`
+  (`--check` verifies without writing); `//tests:checksums_test` fails on an
+  empty or malformed value.

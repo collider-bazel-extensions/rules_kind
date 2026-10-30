@@ -1,5 +1,8 @@
 load("//private:binary.bzl", "kind_binary", "kind_binary_files")
 
+# Read by //tests:checksums_test.
+exports_files(["extensions.bzl"])
+
 # ---------------------------------------------------------------------------
 # Platform config_settings
 # ---------------------------------------------------------------------------

@@ -117,7 +117,18 @@ kind:    https://github.com/kubernetes-sigs/kind/releases/download/
 kubectl: https://dl.k8s.io/release/v{k8s_version}/bin/{os}/{arch}/kubectl
 ```
 
-SHA-256 checksums are stored in `_KIND_VERSIONS` in `extensions.bzl`.
+SHA-256 checksums are stored in `_KIND_VERSIONS` in `extensions.bzl`. They are
+the published release sums (kind `<asset>.sha256sum` on the GitHub release,
+kubectl `<url>.sha256` on dl.k8s.io), regenerated and cross-checked against the
+downloaded binaries by `tools/update_checksums.sh`. `//tests:checksums_test`
+fails on an empty or malformed value, and `_kind_binary_repo` fails on an empty
+one at fetch time.
+
+rules_kind's own `MODULE.bazel` registers `kind.system(["1.29", "1.32"])`, so a
+consumer that declares no tag gets host binaries. Each `kind_<ver>_<platform>`
+repo is declared once: the extension visits the root module first, so a
+consumer's `kind.version(["1.29"])` replaces the system repos for 1.29 (since
+v0.1.5; earlier versions failed on the duplicate repo name).
 
 ### System binaries (`kind.system()`)
 
