@@ -293,11 +293,7 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-10-30)
 
-`pod_to_pod_test` fails on the maintainer host (rootless podman: in-cluster DNS
-gives `wget: bad address 'hello-server:8080'`). It fails the same way at
-v0.1.4, so the cause is the host, not the launcher. The other 5 pass.
-
-The 5 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 6 tests pass. The 5 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
@@ -306,7 +302,7 @@ The 5 cluster tests use podman (rootless Docker alternative) when Docker is unav
 | `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL and after parent exit; keep switch works   | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
 | `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
-| `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | FAILED (host DNS) |
+| `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | PASSED |
 
 To run cluster tests (requires Docker or podman):
 

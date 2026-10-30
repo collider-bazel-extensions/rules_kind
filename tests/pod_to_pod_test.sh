@@ -83,6 +83,21 @@ while [[ "$server_phase" != "Running" ]]; do
 done
 echo "PASS: hello-server is Running"
 
+# The client resolves hello-server through cluster DNS. CoreDNS can still be
+# starting when the env file appears, so wait for it (and for the server's
+# readiness probe, which puts it behind the Service) before running the client.
+echo "waiting for CoreDNS and hello-server readiness…"
+"$KUBECTL" rollout status deployment/coredns \
+    --namespace kube-system \
+    --kubeconfig "$KUBECONFIG" \
+    --timeout=120s
+"$KUBECTL" wait pod/hello-server \
+    --for=condition=Ready \
+    --namespace default \
+    --kubeconfig "$KUBECONFIG" \
+    --timeout=60s
+echo "PASS: CoreDNS and hello-server are ready"
+
 # 2. Run a client pod that fetches from the hello-server Service.
 #    The Service DNS name 'hello-server' resolves within the cluster.
 echo "running client pod…"
