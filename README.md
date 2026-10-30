@@ -19,6 +19,8 @@ bazel test //myapp/...   # kind cluster shared across all services in each servi
 - Applies Kubernetes manifests (`kubectl apply -f`).
 - Writes `$TEST_TMPDIR/<name>.env` when the cluster is fully ready.
 - Blocks until SIGTERM, then runs `kind delete cluster`.
+- Deletes the cluster even when the test fails or the launcher is killed
+  (see [Cluster cleanup](#cluster-cleanup)).
 
 ## What you can test
 
@@ -64,7 +66,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.1.5")
+bazel_dep(name = "rules_kind", version = "0.1.6")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -517,6 +519,27 @@ rules_itest service manager
         :k8s_svc → kind delete cluster
         :app_svc → your shutdown handler
 ```
+
+### Cluster cleanup
+
+The cluster is deleted when the test ends, whether it passed or failed:
+
+- **SIGTERM / SIGINT** — the launcher runs `kind delete cluster`.
+- **Parent exits without signalling** — `rules_itest` exits on a test failure
+  without stopping its services. The launcher notices its parent is gone and
+  deletes the cluster.
+- **Launcher killed** (SIGKILL, crash, or `rules_itest`'s `shutdown_timeout`
+  expiring mid-delete) — a reaper process started in its own session deletes
+  the cluster. Its output goes to `$TEST_TMPDIR/<name>.reaper.log`.
+
+To keep the cluster for debugging, set `RULES_KIND_KEEP_CLUSTER=1`:
+
+```sh
+bazel test //my:e2e_test --test_env=RULES_KIND_KEEP_CLUSTER=1
+```
+
+The launcher logs the cluster name and the `kind delete cluster` command to
+remove it later.
 
 ---
 

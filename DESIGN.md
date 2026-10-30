@@ -91,8 +91,8 @@ MODULE.bazel / WORKSPACE
     kind create cluster
     kind load docker-image (images)
     kubectl apply (manifests)
-    write env file → signal.pause()
-    SIGTERM → kind delete cluster
+    write env file → wait (SIGTERM / parent exit)
+    SIGTERM → kind delete cluster   (reaper deletes it if the launcher dies)
         │
         ▼
   kind_health_check  (private/cluster.bzl)
@@ -218,16 +218,20 @@ with the automatic systemd-run re-execution.
 6. For each file in manifest_files[]:
        kubectl apply -f <file> --kubeconfig $TEST_TMPDIR/kubeconfig
 7. Write $TEST_TMPDIR/<target_name>.env atomically (temp file + os.replace)
-8. Install SIGTERM + SIGINT handlers
-9. signal.pause()
+8. Wait, checking once a second that the parent process is still alive
 ```
+
+Before step 2 the launcher installs its SIGTERM + SIGINT handlers and, unless
+`RULES_KIND_KEEP_CLUSTER` is set, starts the reaper (see Shutdown).
 
 ### Shutdown
 
 ```
-SIGTERM received
+SIGTERM / SIGINT received, or parent pid changed
   ↓
 kind delete cluster --name <name>
+  ↓
+tell the reaper teardown is done
   ↓
 exit(0)
 ```
@@ -235,12 +239,29 @@ exit(0)
 `kind delete cluster` removes all Docker containers, networks, and volumes
 created for the cluster. No cleanup is left to Bazel.
 
-### Crash recovery
+Signals alone are not enough (#9):
 
-If the launcher crashes before deleting the cluster, Docker containers are
-left running. The cluster name includes a UUID so there is no naming collision
-with subsequent runs. A `bazel run //tools:kind_cleanup` helper (Phase 2) will
-prune orphaned clusters.
+- **rules_itest does not stop services on test failure.** In one-shot mode
+  `svcinit` calls `os.Exit(1)` when the test fails, without signalling its
+  services. Services run in their own process group, so the launcher is
+  orphaned rather than killed. The launcher records its parent pid at startup
+  and tears down when it changes.
+- **rules_itest SIGKILLs the process group after `shutdown_timeout`** (default
+  1 s), which can interrupt `kind delete cluster`.
+
+### Reaper
+
+Before creating the cluster, the launcher starts `launcher.py --reap <kind>
+<name>` with `start_new_session=True`, so signals sent to the launcher's
+process group don't reach it. The reaper blocks reading its stdin, a pipe whose
+write end only the launcher holds. After deleting the cluster the launcher
+writes `done` and closes the pipe; the reaper then exits. If the launcher dies
+first (any signal, any crash), the reaper reads EOF without `done` and runs
+`kind delete cluster` itself. Output goes to
+`$TEST_TMPDIR/<target>.reaper.log`.
+
+`RULES_KIND_KEEP_CLUSTER=1` disables both the launcher's deletion and the
+reaper, and logs the command to delete the cluster by hand.
 
 ---
 
@@ -377,7 +398,8 @@ Failures surface as `bazel build` errors, not as runtime failures.
 ## Phase 2
 
 - **`kind_cleanup` tool**: `bazel run //tools:kind_cleanup` prunes orphaned
-  kind clusters (those with the `rules-kind` label) left by crashed launchers.
+  kind clusters left when the reaper itself could not run (host reboot,
+  container runtime down at teardown).
 - **Local registry**: optional `kind_registry` rule that starts a local Docker
   registry inside the kind cluster, eliminating the need to `kind load` large
   images.
@@ -407,8 +429,9 @@ Failures surface as `bazel build` errors, not as runtime failures.
 - **No `kind_test` macro.** All usage requires `rules_itest`.
 - **Image loading is sequential and slow for large images.** Consider a local
   registry for images larger than ~200 MB.
-- **Orphaned clusters on launcher crash.** The `kind_cleanup` tool (Phase 2)
-  will address this.
+- **Orphaned clusters when the reaper cannot run.** The reaper covers launcher
+  crashes and kills, but not a host reboot or a container runtime that is down
+  at teardown. The `kind_cleanup` tool (Phase 2) will address this.
 - **Target name collision.** Two `kind_cluster` targets with the same local
   name in different packages write to the same env file path.
 - **Windows not supported** (no pre-built binary source; PRs welcome).

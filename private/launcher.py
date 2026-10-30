@@ -6,8 +6,16 @@ Reads RULES_KIND_MANIFEST (JSON) and performs the full kind cluster lifecycle:
   detect runtime (Docker or podman) → kind create cluster
   → kind get kubeconfig → wait for API server
   → kind load image-archive (images) → kubectl apply (manifests)
-  → write $TEST_TMPDIR/<name>.env → signal.pause()
-  → SIGTERM → kind delete cluster → exit 0
+  → write $TEST_TMPDIR/<name>.env → wait
+  → SIGTERM / SIGINT / parent exit → kind delete cluster → exit 0
+
+Cleanup:
+  A reaper process (this script with --reap) is started in its own session
+  before the cluster is created. It holds the read end of a pipe whose write
+  end only the launcher holds. If the launcher dies without reporting a
+  finished teardown (SIGKILL, crash, rules_itest's shutdown timeout), the
+  reaper sees EOF and deletes the cluster. Set RULES_KIND_KEEP_CLUSTER=1 to
+  leave the cluster running for debugging.
 
 Container runtime:
   By default, Docker is used. If Docker is unavailable, podman is used
@@ -319,6 +327,57 @@ def _apply_manifests(kubectl_bin, kubeconfig, manifest_files):
             _log(result.stdout.strip())
 
 
+def _keep_cluster():
+    """True when RULES_KIND_KEEP_CLUSTER asks to leave the cluster running."""
+    return os.environ.get("RULES_KIND_KEEP_CLUSTER", "").lower() not in (
+        "", "0", "false", "no")
+
+
+def _start_reaper(kind_bin, cluster_name, env, log_path):
+    """Start the reaper in its own session so process-group signals sent to
+    the launcher (rules_itest SIGKILLs the whole group after its shutdown
+    timeout) don't reach it. Returns the Popen; the launcher keeps its stdin
+    open until teardown is done."""
+    log = open(log_path, "ab")
+    try:
+        return subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__),
+             "--reap", kind_bin, cluster_name],
+            stdin=subprocess.PIPE, stdout=log, stderr=log,
+            env=env, start_new_session=True,
+        )
+    finally:
+        log.close()
+
+
+def _release_reaper(reaper):
+    """Tell the reaper teardown is finished, so it exits without deleting."""
+    if reaper is None:
+        return
+    try:
+        reaper.stdin.write(b"done")
+        reaper.stdin.close()
+    except OSError:
+        pass
+
+
+def _reap_main(kind_bin, cluster_name):
+    """Reaper mode: block until the launcher closes our stdin, then delete
+    the cluster unless the launcher reported that it already did."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    if sys.stdin.buffer.read() == b"done":
+        return
+    _log(f"launcher exited without tearing down {cluster_name}")
+    # The launcher removes its short podman TMPDIR on exit; kind still needs one.
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        os.makedirs(tmpdir, exist_ok=True)
+    _delete_cluster(kind_bin, cluster_name, os.environ.copy())
+    if tmpdir and os.path.basename(tmpdir).startswith("rules_kind-tmp-"):
+        _best_effort_rmtree(tmpdir)
+
+
 def _delete_cluster(kind_bin, cluster_name, env):
     _log(f"deleting cluster {cluster_name}…")
     try:
@@ -401,24 +460,42 @@ def main():
     cluster_name   = _allocate_cluster_name()
     kubeconfig     = os.path.join(test_tmpdir, "kubeconfig")
     output_env     = os.path.join(test_tmpdir, f"{cluster_target_name}.env")
+    keep           = _keep_cluster()
 
     _log(f"cluster name: {cluster_name}")
     _log(f"env file:     {output_env}")
     _log(f"runtime:      {runtime}")
 
-    # Create cluster.
-    _create_cluster(kind_bin, cluster_name, k8s_node_version, kind_config, env)
+    # rules_itest exits without signalling its services when the test fails,
+    # leaving us orphaned. Watch for that by checking our parent pid.
+    parent_pid = os.getppid()
 
-    # Register shutdown handler immediately after cluster exists.
+    reaper = None
+    if keep:
+        _log("RULES_KIND_KEEP_CLUSTER is set: the cluster will not be deleted")
+    else:
+        reaper = _start_reaper(
+            kind_bin, cluster_name, env,
+            os.path.join(test_tmpdir, f"{cluster_target_name}.reaper.log"))
+
+    def _teardown():
+        if keep:
+            _log(f"keeping cluster {cluster_name}; delete it with: "
+                 f"kind delete cluster --name {cluster_name}")
+        else:
+            _delete_cluster(kind_bin, cluster_name, env)
+        _release_reaper(reaper)
+
     def _shutdown(signum, _frame):
         _log(f"received signal {signum}, shutting down…")
-        _delete_cluster(kind_bin, cluster_name, env)
+        _teardown()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
     try:
+        _create_cluster(kind_bin, cluster_name, k8s_node_version, kind_config, env)
         _get_kubeconfig(kind_bin, cluster_name, kubeconfig, env)
         _wait_apiserver_ready(kubectl_bin, kubeconfig)
         apiserver_url = _get_api_server_url(kubectl_bin, kubeconfig)
@@ -446,13 +523,18 @@ def main():
         os.replace(tmp, output_env)
         _log(f"cluster ready — env file written: {output_env}")
 
-        while True:
-            signal.pause()
+        while os.getppid() == parent_pid:
+            time.sleep(1)
+        _log("parent process exited without stopping the cluster service")
+        _teardown()
 
     except Exception:
-        _delete_cluster(kind_bin, cluster_name, env)
+        _teardown()
         raise
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 4 and sys.argv[1] == "--reap":
+        _reap_main(sys.argv[2], sys.argv[3])
+    else:
+        main()

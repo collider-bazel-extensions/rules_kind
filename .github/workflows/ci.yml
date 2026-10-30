@@ -59,6 +59,7 @@ jobs:
             //tests:checksums_test \
             //tests:kind_health_check_test \
             //tests:kind_server_test \
+            //tests:cluster_cleanup_test \
             //tests:cluster_test \
             //tests:manifest_test \
             //tests:pod_to_pod_test \
