@@ -94,7 +94,8 @@ into a test binary.
 
 The launcher auto-detects the container runtime at startup:
 
-1. Tries `docker info` — uses Docker if available.
+1. Tries `docker info` — uses Docker if available. Each probe has a 30 s
+   timeout (a busy runtime can take well over 5 s to answer).
 2. Falls back to `podman --runtime /usr/bin/crun info` — uses podman with
    `KIND_EXPERIMENTAL_PROVIDER=podman`.
 3. Fails with a clear error if neither is available.

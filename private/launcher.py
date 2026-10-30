@@ -94,6 +94,12 @@ def _run(args, env=None, check=True, **kwargs):
 # Container runtime detection
 # ---------------------------------------------------------------------------
 
+# `docker info` / `podman info` can take well over 5 s on a loaded host
+# (several kind clusters starting at once on a CI runner); a short timeout
+# misreports a busy runtime as a missing one.
+_RUNTIME_PROBE_TIMEOUT_S = 30
+
+
 def _detect_runtime():
     """Return ("docker", env_extras) or ("podman", env_extras).
 
@@ -107,7 +113,7 @@ def _detect_runtime():
     try:
         result = subprocess.run(
             ["docker", "info"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=_RUNTIME_PROBE_TIMEOUT_S,
         )
         if result.returncode == 0:
             _log("using Docker as container runtime")
@@ -119,13 +125,13 @@ def _detect_runtime():
     except FileNotFoundError:
         docker_problem = "docker binary not found in PATH"
     except subprocess.TimeoutExpired:
-        docker_problem = "docker info timed out after 5 s (daemon hung?)"
+        docker_problem = f"docker info timed out after {_RUNTIME_PROBE_TIMEOUT_S} s (daemon hung?)"
 
     # Fall back to podman.
     try:
         result = subprocess.run(
             ["podman", "--runtime", "/usr/bin/crun", "info"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=_RUNTIME_PROBE_TIMEOUT_S,
         )
         if result.returncode == 0:
             _log("Docker unavailable, using podman as container runtime")
@@ -137,7 +143,7 @@ def _detect_runtime():
     except FileNotFoundError:
         podman_problem = "podman binary not found in PATH"
     except subprocess.TimeoutExpired:
-        podman_problem = "podman info timed out after 5 s"
+        podman_problem = f"podman info timed out after {_RUNTIME_PROBE_TIMEOUT_S} s"
 
     raise RuntimeError(
         "rules_kind requires a container runtime (Docker or podman) to run\n"
