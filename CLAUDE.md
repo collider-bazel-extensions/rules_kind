@@ -36,6 +36,7 @@ rules_kind/
     ├── manifest_test.sh             # Manifest applied before env file written
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
+    ├── cluster_cleanup_test.sh      # Cluster deleted on SIGKILL / orphaning; keep switch
     └── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
 tools/
 ├── fetch_busybox.sh          # Regenerate tests/testdata/busybox.tar
@@ -113,6 +114,8 @@ systemd-run --scope --user --property=Delegate=yes -- python3 launcher.py ...
 ```
 _allocate_cluster_name()   → kind-<uuid>
   ↓
+install SIGTERM + SIGINT handlers; start reaper (own session)
+  ↓
 kind create cluster --name <name> --config <config>
   ↓
 _wait_apiserver_ready()    → kubectl cluster-info (max 120 s)
@@ -123,12 +126,23 @@ kubectl apply -f           → apply manifests in order (if manifests provided)
   ↓
 write $TEST_TMPDIR/<name>.env atomically   ← readiness signal
   ↓
-install SIGTERM + SIGINT handlers
+wait until signalled or the parent pid changes
   ↓
-signal.pause()
-  ↓
-SIGTERM → kind delete cluster --name <name>
+kind delete cluster --name <name> → tell reaper "done"
 ```
+
+### Cluster cleanup
+
+rules_itest does not signal services when the test fails (`svcinit` calls
+`os.Exit(1)`), and SIGKILLs the process group after `shutdown_timeout`
+(default 1 s). So the launcher does not rely on SIGTERM alone:
+
+- It records its parent pid and tears down when that changes (orphaned).
+- A reaper (`launcher.py --reap <kind> <name>`, `start_new_session=True`)
+  holds a pipe from the launcher. EOF without `done` → it deletes the cluster.
+  Output: `$TEST_TMPDIR/<target>.reaper.log`.
+- `RULES_KIND_KEEP_CLUSTER=1` (e.g. `--test_env=RULES_KIND_KEEP_CLUSTER=1`)
+  keeps the cluster and logs the delete command.
 
 ### Binary acquisition
 
@@ -277,17 +291,22 @@ linux-sandbox so the Docker socket is accessible.
 
 All tests must pass before any commit with code changes.
 
-### Test results (last full run: 2026-04-19)
+### Test results (last full run: 2026-10-30)
 
-All 5 tests pass. The 4 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+`pod_to_pod_test` fails on the maintainer host (rootless podman: in-cluster DNS
+gives `wget: bad address 'hello-server:8080'`). It fails the same way at
+v0.1.4, so the cause is the host, not the launcher. The other 5 pass.
+
+The 5 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
+| `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL and after parent exit; keep switch works   | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
 | `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
-| `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | PASSED |
+| `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | FAILED (host DNS) |
 
 To run cluster tests (requires Docker or podman):
 
@@ -310,9 +329,10 @@ systemd-run --scope --user --property=Delegate=yes -- \
 7. Loads Docker images into cluster nodes via `kind load docker-image`.
 8. Applies manifest files via `kubectl apply -f` in order.
 9. Writes `$TEST_TMPDIR/<name>.env` atomically.
-10. Installs SIGTERM/SIGINT handlers.
-11. Blocks via `signal.pause()`.
-12. On signal: `kind delete cluster --name <name>` then exits 0.
+10. Waits until SIGTERM/SIGINT (handlers installed before step 4) or until its
+    parent pid changes.
+11. Runs `kind delete cluster --name <name>`, tells the reaper it is done,
+    exits 0. If the launcher dies first, the reaper deletes the cluster.
 
 ### Test script requirements
 

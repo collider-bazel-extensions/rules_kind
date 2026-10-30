@@ -72,6 +72,21 @@ sh_test(
 )
 
 # ---------------------------------------------------------------------------
+# cluster_cleanup_test — requires Docker
+# Tests: cluster deleted after launcher SIGKILL or parent exit (#9);
+# RULES_KIND_KEEP_CLUSTER=1 keeps it.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name    = "cluster_cleanup_test",
+    srcs    = ["cluster_cleanup_test.sh"],
+    data    = [":test_cluster"],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)
+
+# ---------------------------------------------------------------------------
 # cluster_test — requires Docker
 # Tests: cluster connectivity, pod scheduling.
 # ---------------------------------------------------------------------------
