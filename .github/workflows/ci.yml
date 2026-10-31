@@ -26,22 +26,29 @@ jobs:
           disk-cache: ${{ github.workflow }}-${{ matrix.runtime }}
           repository-cache: true
 
+      - name: Start a user systemd instance
+        # Both jobs: the launcher runs its reaper as a `systemd-run --user`
+        # unit so it outlives the test (Bazel kills a test's leftover
+        # processes); rootless podman also needs `systemd-run --user
+        # --scope` for cgroup delegation. Lingering starts the runner
+        # user's systemd instance.
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            systemctl --user is-active default.target 2>/dev/null && break
+            sleep 1
+          done
+          systemctl --user is-active default.target
+
       - name: Force podman fallback
         # ubuntu-latest ships both runtimes pre-installed and active; the
         # launcher's `_detect_runtime()` prefers Docker. To exercise the
-        # podman path we stop the Docker daemon first. We also enable
-        # lingering for the runner user so a user systemd instance is
-        # available — `systemd-run --user --scope` (the cgroup-delegation
-        # path the launcher takes for rootless podman) requires it.
+        # podman path we stop the Docker daemon first.
         if: matrix.runtime == 'podman'
         run: |
           set -euo pipefail
           sudo systemctl stop docker.socket docker || true
-          sudo loginctl enable-linger "$USER"
-          for _ in 1 2 3 4 5; do
-            systemctl --user is-active default.target 2>/dev/null && break
-            sleep 1
-          done
           podman info --format '{{.Host.OCIRuntime.Name}}: cgroups v{{.Host.CgroupsVersion}}'
 
       - name: bazel build //...
@@ -63,6 +70,7 @@ jobs:
             //tests:kind_health_check_test \
             //tests:kind_server_test \
             //tests:cluster_cleanup_test \
+            //tests:reaper_outlives_test \
             //tests:cluster_test \
             //tests:manifest_test \
             //tests:pod_to_pod_test \
@@ -71,6 +79,22 @@ jobs:
             //tests:k8s_1_37_version_test \
             --test_output=errors \
             --local_test_jobs=2
+
+      - name: No kind clusters left behind
+        # reaper_outlives_test SIGKILLs its launcher and exits while the
+        # cluster still exists; every other test tears down its own. Give
+        # the reapers two minutes, then fail on anything left.
+        run: |
+          set -euo pipefail
+          rt=${{ matrix.runtime }}
+          for _ in $(seq 1 60); do
+            left=$($rt ps -a --filter label=io.x-k8s.kind.cluster --format '{{.Names}}')
+            [[ -z "$left" ]] && { echo "no kind clusters left"; exit 0; }
+            sleep 2
+          done
+          echo "kind clusters left behind:"; echo "$left"
+          systemctl --user list-units 'rules-kind-reaper-*' --all --no-pager || true
+          exit 1
 
       - name: Upload test logs on failure
         if: failure()

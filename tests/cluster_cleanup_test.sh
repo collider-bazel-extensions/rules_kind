@@ -27,6 +27,10 @@ if docker info >/dev/null 2>&1; then
     runtime=docker
 else
     runtime=podman
+    # Same image store as the launcher (Bazel sets HOME=$TEST_TMPDIR).
+    home=$(getent passwd "$(id -u)" | cut -d: -f6)
+    export XDG_DATA_HOME="${XDG_DATA_HOME:-$home/.local/share}"
+    export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$home/.config}"
 fi
 
 env_file="${TEST_TMPDIR}/test_cluster.env"
@@ -74,6 +78,13 @@ pid=$!
 wait_env_file "$pid"
 name=$(cluster_name)
 [[ $(node_count "$name") -gt 0 ]] || { echo "FAIL: no nodes for $name" >&2; exit 1; }
+# Bazel strips XDG_RUNTIME_DIR; systemctl --user needs it to find the bus.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if command -v systemctl >/dev/null && systemctl --user is-active default.target >/dev/null 2>&1; then
+    systemctl --user is-active "rules-kind-reaper-$name.service" >/dev/null \
+        || { echo "FAIL: reaper unit rules-kind-reaper-$name not active" >&2; exit 1; }
+    echo "PASS: reaper runs as systemd user unit rules-kind-reaper-$name"
+fi
 kill -KILL "$pid"
 wait "$pid" 2>/dev/null || true
 wait_deleted "$name"

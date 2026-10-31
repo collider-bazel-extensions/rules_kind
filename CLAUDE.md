@@ -36,7 +36,8 @@ rules_kind/
     ├── manifest_test.sh             # Manifest applied before env file written
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
-    ├── cluster_cleanup_test.sh      # Cluster deleted on SIGKILL / orphaning; keep switch
+    ├── cluster_cleanup_test.sh      # Cluster deleted on SIGKILL / orphaning; keep switch; reaper unit
+    ├── reaper_outlives_test.sh      # SIGKILLs the launcher and exits; CI checks the cluster is gone
     ├── k8s_version_test.sh          # Per-minor (1.35/1.36/1.37): server gitVersion + kubectl minor
     └── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
 tools/
@@ -111,12 +112,19 @@ systemd-run --scope --user --property=Delegate=yes -- python3 launcher.py ...
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set automatically from
 `/run/user/<uid>/` when the Bazel sandbox strips them.
 
+Bazel sets `HOME=$TEST_TMPDIR`. The launcher sets `XDG_DATA_HOME` /
+`XDG_CONFIG_HOME` (if unset) to the passwd home's dirs, so rootless podman
+uses the user's real image store instead of a fresh one under the execroot
+(which re-pulled kindest/node every run and left subuid-owned files that
+broke the next build). Test scripts that call `podman` directly must do the
+same (see `tests/cluster_cleanup_test.sh`).
+
 ### Cluster lifecycle
 
 ```
 _allocate_cluster_name()   → kind-<uuid>
   ↓
-install SIGTERM + SIGINT handlers; start reaper (own session)
+install SIGTERM + SIGINT handlers; start reaper (systemd user unit, else own session)
   ↓
 kind create cluster --name <name> --config <config>
   ↓
@@ -130,7 +138,7 @@ write $TEST_TMPDIR/<name>.env atomically   ← readiness signal
   ↓
 wait until signalled or the parent pid changes
   ↓
-kind delete cluster --name <name> → tell reaper "done"
+kind delete cluster --name <name> → stop the reaper unit / tell reaper "done"
 ```
 
 ### Cluster cleanup
@@ -140,9 +148,17 @@ rules_itest does not signal services when the test fails (`svcinit` calls
 (default 1 s). So the launcher does not rely on SIGTERM alone:
 
 - It records its parent pid and tears down when that changes (orphaned).
-- A reaper (`launcher.py --reap <kind> <name>`, `start_new_session=True`)
-  holds a pipe from the launcher. EOF without `done` → it deletes the cluster.
-  Output: `$TEST_TMPDIR/<target>.reaper.log`.
+- Bazel kills every process a test leaves running when the test exits, so a
+  reaper that is the test's child dies exactly when it is needed. The reaper
+  runs as a systemd user unit (`systemd-run --user --unit
+  rules-kind-reaper-<cluster>`, `launcher.py --reap-pid <kind> <name> <pid>
+  <starttime> <log>`) that polls the launcher's pid and deletes the cluster
+  once it is gone; the launcher stops the unit after a finished teardown.
+- Fallback when `systemd-run --user` fails: `launcher.py --reap <kind>
+  <name>`, `start_new_session=True`, holding a pipe from the launcher. EOF
+  without `done` → it deletes the cluster. Only covers deaths while the test
+  is still running.
+- Output: `$TEST_TMPDIR/<target>.reaper.log`.
 - `RULES_KIND_KEEP_CLUSTER=1` (e.g. `--test_env=RULES_KIND_KEEP_CLUSTER=1`)
   keeps the cluster and logs the delete command.
 
@@ -296,14 +312,15 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-10-30)
 
-All 10 tests pass. The 8 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 11 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
 | `//tests:checksums_test`           | every `_KIND_VERSIONS` entry has a 64-hex SHA-256 (no network, no runtime)        | PASSED |
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
-| `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL and after parent exit; keep switch works   | PASSED |
+| `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL and after parent exit; keep switch works; reaper is a systemd user unit | PASSED |
+| `//tests:reaper_outlives_test`     | launcher SIGKILLed, test exits at once; cluster deleted afterwards (checked after `bazel test` returns) | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
 | `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
 | `//tests:pod_to_pod_test`          | server pod + Service deployed; client pod fetches via cluster DNS, verifies body  | PASSED |
@@ -334,8 +351,9 @@ systemd-run --scope --user --property=Delegate=yes -- \
 9. Writes `$TEST_TMPDIR/<name>.env` atomically.
 10. Waits until SIGTERM/SIGINT (handlers installed before step 4) or until its
     parent pid changes.
-11. Runs `kind delete cluster --name <name>`, tells the reaper it is done,
-    exits 0. If the launcher dies first, the reaper deletes the cluster.
+11. Runs `kind delete cluster --name <name>`, stops the reaper unit (or
+    tells the child reaper it is done), exits 0. If the launcher dies first,
+    the reaper deletes the cluster.
 
 ### Test script requirements
 

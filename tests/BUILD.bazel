@@ -87,6 +87,22 @@ sh_test(
 )
 
 # ---------------------------------------------------------------------------
+# reaper_outlives_test — requires Docker
+# Tests: the launcher is SIGKILLed and the test exits at once; the reaper
+# must survive Bazel killing the test's leftover processes. CI's "No kind
+# clusters left behind" step checks that the cluster is deleted.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name    = "reaper_outlives_test",
+    srcs    = ["reaper_outlives_test.sh"],
+    data    = [":test_cluster"],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)
+
+# ---------------------------------------------------------------------------
 # cluster_test — requires Docker
 # Tests: cluster connectivity, pod scheduling.
 # ---------------------------------------------------------------------------
