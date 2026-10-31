@@ -164,6 +164,19 @@ The launcher tries runtimes in order:
    with `KIND_EXPERIMENTAL_PROVIDER=podman`.
 3. **Error** — neither available; fail with a clear install hint.
 
+### Podman image store
+
+Bazel's test runner sets `HOME=$TEST_TMPDIR`, and rootless podman keeps its
+image store under `$XDG_DATA_HOME` (default `$HOME/.local/share`). Before
+v0.2.1 every test run therefore got a fresh store inside the execroot: the
+~1 GB `kindest/node` image was pulled again each time, and the store's
+subuid-owned files made the next build in that output base fail ("Failed to
+prepare the symlink forest ... Operation not permitted"). The launcher now
+sets `XDG_DATA_HOME` / `XDG_CONFIG_HOME` (if unset) to the passwd home's
+`.local/share` / `.config` before probing for a runtime. kind and kubectl
+read `$HOME/.kube`, not these, so the kubeconfig stays in the test's tmpdir
+and `~/.kube/config` is never touched.
+
 ### Sandbox bypass
 
 Bazel's linux-sandbox blocks access to `/var/run/docker.sock` (Docker) and
@@ -255,14 +268,41 @@ Signals alone are not enough (#9):
 
 ### Reaper
 
-Before creating the cluster, the launcher starts `launcher.py --reap <kind>
-<name>` with `start_new_session=True`, so signals sent to the launcher's
-process group don't reach it. The reaper blocks reading its stdin, a pipe whose
-write end only the launcher holds. After deleting the cluster the launcher
-writes `done` and closes the pipe; the reaper then exits. If the launcher dies
-first (any signal, any crash), the reaper reads EOF without `done` and runs
-`kind delete cluster` itself. Output goes to
-`$TEST_TMPDIR/<target>.reaper.log`.
+When a test exits, Bazel kills every process it left behind, including ones
+in their own session (verified: a `start_new_session=True` child of an
+`sh_test` dies when the test returns). rules_itest's usual teardown is
+SIGTERM, then SIGKILL of the launcher's process group one second later,
+then exit, so the reaper runs exactly when Bazel is about to kill it. It
+must therefore not be one of the test's processes.
+
+**systemd user unit (preferred).** Before creating the cluster, the launcher
+runs `systemd-run --user --collect --unit rules-kind-reaper-<name>
+--property=Delegate=yes -- python3 launcher.py --reap-pid <kind> <name>
+<pid> <starttime> <log>`. systemd, not the test, is the reaper's parent. The
+launcher's environment is passed through with `--setenv=NAME` (a service
+otherwise gets the user manager's environment). The reaper polls
+`/proc/<pid>/stat` once a second; pid plus start time (field 22) identifies
+the launcher even if the pid is reused. When the launcher is gone it runs
+`kind delete cluster`, which is harmless if the cluster is already gone.
+After a finished teardown the launcher runs `systemctl --user stop
+--no-block` on the unit, so the usual case doesn't run a second delete.
+
+**Child process (fallback).** If `systemd-run --user` fails (no user
+manager, no D-Bus), the launcher starts `launcher.py --reap <kind> <name>`
+with `start_new_session=True`, so signals sent to the launcher's process
+group don't reach it. The reaper blocks reading its stdin, a pipe whose write
+end only the launcher holds. After deleting the cluster the launcher writes
+`done` and closes the pipe; the reaper then exits. If the launcher dies first
+(any signal, any crash), the reaper reads EOF without `done` and runs `kind
+delete cluster` itself. This covers launcher deaths while the test runs
+(`cluster_cleanup_test`), not a launcher killed as the test exits.
+
+Before v0.2.1 the child process was the only reaper, and clusters whose
+launcher was SIGKILLed during rules_itest's shutdown were left stuck in
+"Stopping". `reaper_outlives_test` reproduces that case; CI's "No kind
+clusters left behind" step checks the outcome after `bazel test` returns.
+
+Output goes to `$TEST_TMPDIR/<target>.reaper.log` in both modes.
 
 `RULES_KIND_KEEP_CLUSTER=1` disables both the launcher's deletion and the
 reaper, and logs the command to delete the cluster by hand.
@@ -436,7 +476,9 @@ Failures surface as `bazel build` errors, not as runtime failures.
   registry for images larger than ~200 MB.
 - **Orphaned clusters when the reaper cannot run.** The reaper covers launcher
   crashes and kills, but not a host reboot or a container runtime that is down
-  at teardown. The `kind_cleanup` tool (Phase 2) will address this.
+  at teardown, and without a systemd user instance it doesn't survive the end
+  of the test (see Reaper). The `kind_cleanup` tool (Phase 2) will address
+  this.
 - **Target name collision.** Two `kind_cluster` targets with the same local
   name in different packages write to the same env file path.
 - **Windows not supported** (no pre-built binary source; PRs welcome).

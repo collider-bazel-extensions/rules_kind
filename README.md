@@ -50,7 +50,10 @@ bazel test //myapp/...   # kind cluster shared across all services in each servi
 
 **Rootless podman** (Fedora, RHEL, etc.) works automatically. The launcher
 re-executes itself under `systemd-run --scope --user --property=Delegate=yes`
-when podman requires cgroup delegation.
+when podman requires cgroup delegation. It uses your normal podman image
+store (`~/.local/share/containers`), even though Bazel sets `HOME` to the
+test's tmpdir, so the `kindest/node` image is pulled once, not per test run
+(v0.2.1+).
 
 Install kind:
 
@@ -66,7 +69,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.2.0")
+bazel_dep(name = "rules_kind", version = "0.2.1")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -535,8 +538,19 @@ The cluster is deleted when the test ends, whether it passed or failed:
   without stopping its services. The launcher notices its parent is gone and
   deletes the cluster.
 - **Launcher killed** (SIGKILL, crash, or `rules_itest`'s `shutdown_timeout`
-  expiring mid-delete) — a reaper process started in its own session deletes
-  the cluster. Its output goes to `$TEST_TMPDIR/<name>.reaper.log`.
+  expiring mid-delete) — a reaper deletes the cluster. Its output goes to
+  `$TEST_TMPDIR/<name>.reaper.log`.
+
+  Bazel kills every process a test leaves running once the test exits, so
+  the reaper runs as a transient **systemd user service**
+  (`rules-kind-reaper-<cluster>`, via `systemd-run --user`) that watches the
+  launcher's pid. Without a reachable user systemd instance (e.g. some CI
+  containers) it falls back to a child process, which only covers launcher
+  deaths while the test is still running: a cluster whose launcher is
+  killed as the test ends (the usual `rules_itest` case) can be left
+  behind. On CI, `sudo loginctl enable-linger "$USER"` starts the user
+  instance. Before v0.2.1 the reaper was always a child process and was
+  killed with the test, leaving such clusters stuck in "Stopping".
 
 To keep the cluster for debugging, set `RULES_KIND_KEEP_CLUSTER=1`:
 

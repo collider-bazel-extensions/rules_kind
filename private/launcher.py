@@ -10,12 +10,17 @@ Reads RULES_KIND_MANIFEST (JSON) and performs the full kind cluster lifecycle:
   → SIGTERM / SIGINT / parent exit → kind delete cluster → exit 0
 
 Cleanup:
-  A reaper process (this script with --reap) is started in its own session
-  before the cluster is created. It holds the read end of a pipe whose write
-  end only the launcher holds. If the launcher dies without reporting a
-  finished teardown (SIGKILL, crash, rules_itest's shutdown timeout), the
-  reaper sees EOF and deletes the cluster. Set RULES_KIND_KEEP_CLUSTER=1 to
-  leave the cluster running for debugging.
+  A reaper (this script with --reap-pid or --reap) is started before the
+  cluster is created. If the launcher dies without finishing teardown
+  (SIGKILL, crash, rules_itest's shutdown timeout), the reaper deletes the
+  cluster. Bazel kills every process a test leaves behind when the test
+  exits, so the reaper must not be one of the test's processes: when a
+  systemd user manager is reachable it runs as a transient service
+  (`systemd-run --user`) that watches the launcher's pid. Otherwise it falls
+  back to a child in its own session holding a pipe from the launcher (EOF
+  without "done" → delete), which only covers deaths while the test is still
+  running. Set RULES_KIND_KEEP_CLUSTER=1 to leave the cluster running for
+  debugging.
 
 Container runtime:
   By default, Docker is used. If Docker is unavailable, podman is used
@@ -28,6 +33,8 @@ import atexit
 import dataclasses
 import json
 import os
+import pwd
+import re
 import shutil
 import signal
 import subprocess
@@ -196,14 +203,33 @@ def _best_effort_rmtree(path):
         pass
 
 
-def _reexec_under_systemd():
-    """Re-exec this process under systemd-run --scope --property=Delegate=yes."""
-    _log("re-executing under systemd-run for rootless podman cgroup delegation…")
+def _use_real_home_for_containers():
+    """Keep rootless podman's storage and config in the user's real home.
 
+    Bazel's test runner sets `HOME=$TEST_TMPDIR`, and rootless podman keeps
+    its image store under `$XDG_DATA_HOME` (default `$HOME/.local/share`).
+    Left alone, every test run gets a fresh store under the execroot: the
+    kindest/node image is pulled again each time, and the store's
+    subuid-owned files make the next build fail ("Failed to prepare the
+    symlink forest ... Operation not permitted"). Pointing the XDG dirs at
+    the passwd home fixes both. kind and kubectl read `$HOME` (for
+    `~/.kube/config`), not these, so they stay inside the test's tmpdir.
+    """
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        return
+    if not home or os.environ.get("HOME") == home:
+        return
+    os.environ.setdefault("XDG_DATA_HOME", os.path.join(home, ".local", "share"))
+    os.environ.setdefault("XDG_CONFIG_HOME", os.path.join(home, ".config"))
+
+
+def _systemd_user_env():
+    """Environment for `systemd-run --user`, which needs XDG_RUNTIME_DIR and
+    DBUS_SESSION_BUS_ADDRESS. Bazel's sandbox may strip these; derive them
+    from the real UID."""
     env = os.environ.copy()
-
-    # systemd-run --user needs XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS.
-    # Bazel's sandbox may strip these; derive them from the real UID.
     uid = os.getuid()
     xdg = f"/run/user/{uid}"
     if not env.get("XDG_RUNTIME_DIR") and os.path.isdir(xdg):
@@ -212,6 +238,14 @@ def _reexec_under_systemd():
         bus = f"unix:path={xdg}/bus"
         if os.path.exists(f"{xdg}/bus"):
             env["DBUS_SESSION_BUS_ADDRESS"] = bus
+    return env
+
+
+def _reexec_under_systemd():
+    """Re-exec this process under systemd-run --scope --property=Delegate=yes."""
+    _log("re-executing under systemd-run for rootless podman cgroup delegation…")
+
+    env = _systemd_user_env()
 
     cmd = [
         "systemd-run",
@@ -339,11 +373,68 @@ def _keep_cluster():
         "", "0", "false", "no")
 
 
+def _proc_start_time(pid):
+    """Start time of `pid` in clock ticks since boot (field 22 of
+    /proc/<pid>/stat), or None if the process is gone. Paired with the pid
+    it identifies a process even if the pid is reused."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+    except OSError:
+        return None
+    # Field 2 (comm) may contain spaces; fields after it follow the last ")".
+    return stat[stat.rindex(")") + 2:].split()[19]
+
+
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _reaper_unit_name(cluster_name):
+    return f"rules-kind-reaper-{cluster_name}"
+
+
+def _start_reaper_unit(kind_bin, cluster_name, env, log_path):
+    """Start the reaper as a transient systemd user service. systemd, not
+    the test, is its parent, so Bazel can't kill it when the test exits.
+    Returns the unit name, or None if no user manager is reachable."""
+    if not shutil.which("systemd-run") or not os.path.exists("/proc/self/stat"):
+        return None
+    unit = _reaper_unit_name(cluster_name)
+    pid = os.getpid()
+    cmd = ["systemd-run", "--user", "--quiet", "--collect", "--unit", unit,
+           "--property=Delegate=yes"]
+    # A service starts with the user manager's environment, not ours; pass
+    # ours through (`-E NAME` copies NAME from systemd-run's environment).
+    # systemd rejects names that aren't shell identifiers (e.g. bash's
+    # exported `BASH_FUNC_f%%`).
+    cmd += [f"--setenv={k}" for k in sorted(env) if _ENV_NAME.fullmatch(k)]
+    cmd += ["--", sys.executable, os.path.abspath(__file__), "--reap-pid",
+            kind_bin, cluster_name, str(pid), _proc_start_time(pid), log_path]
+    sd_env = _systemd_user_env()
+    sd_env.update(env)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                env=sd_env, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _log(f"reaper: systemd-run unavailable ({e}); using a child process")
+        return None
+    if result.returncode != 0:
+        _log("reaper: systemd-run --user failed "
+             f"({result.stderr.strip()[:200]}); using a child process")
+        return None
+    _log(f"reaper: systemd user unit {unit}")
+    return unit
+
+
 def _start_reaper(kind_bin, cluster_name, env, log_path):
-    """Start the reaper in its own session so process-group signals sent to
-    the launcher (rules_itest SIGKILLs the whole group after its shutdown
-    timeout) don't reach it. Returns the Popen; the launcher keeps its stdin
-    open until teardown is done."""
+    """Start the reaper. Prefer a systemd user unit (see _start_reaper_unit);
+    fall back to a child in its own session so process-group signals sent
+    to the launcher (rules_itest SIGKILLs the whole group after its shutdown
+    timeout) don't reach it. Returns the unit name or the Popen; a Popen's
+    stdin stays open until teardown is done."""
+    unit = _start_reaper_unit(kind_bin, cluster_name, env, log_path)
+    if unit:
+        return unit
     log = open(log_path, "ab")
     try:
         return subprocess.Popen(
@@ -360,6 +451,10 @@ def _release_reaper(reaper):
     """Tell the reaper teardown is finished, so it exits without deleting."""
     if reaper is None:
         return
+    if isinstance(reaper, str):
+        subprocess.run(["systemctl", "--user", "stop", "--no-block", reaper],
+                       capture_output=True, env=_systemd_user_env())
+        return
     try:
         reaper.stdin.write(b"done")
         reaper.stdin.close()
@@ -375,6 +470,25 @@ def _reap_main(kind_bin, cluster_name):
     if sys.stdin.buffer.read() == b"done":
         return
     _log(f"launcher exited without tearing down {cluster_name}")
+    _reap_delete(kind_bin, cluster_name)
+
+
+def _reap_pid_main(kind_bin, cluster_name, pid, start_time, log_path):
+    """Reaper mode under systemd: poll the launcher (pid + start time) and
+    delete the cluster once it is gone. The launcher stops this unit after
+    a finished teardown; if it is killed first, `kind delete` here is
+    harmless on an already deleted cluster."""
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+    while _proc_start_time(pid) == start_time:
+        time.sleep(1)
+    _log(f"launcher {pid} exited; deleting {cluster_name} if it still exists")
+    _reap_delete(kind_bin, cluster_name)
+
+
+def _reap_delete(kind_bin, cluster_name):
     # The launcher removes its short podman TMPDIR on exit; kind still needs one.
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
@@ -431,6 +545,8 @@ def main():
     if "kind_config" in m:
         kind_config = _find_runfile(m["kind_config"], workspace)
 
+    _use_real_home_for_containers()
+
     # Detect container runtime (Docker or podman).
     runtime, runtime_env = _detect_runtime()
 
@@ -452,9 +568,8 @@ def main():
     # after user `--test_env` overrides for hermeticity. The launcher is the
     # right place to do this.
     #
-    # We deliberately leave `$HOME` alone: podman's image storage lives at
-    # `$HOME/.local/share/containers/storage`, and redirecting it would
-    # invalidate the kindest/node image cache on every test run.
+    # podman's image store is kept out of `$TEST_TMPDIR` by
+    # _use_real_home_for_containers() above.
     if runtime == "podman":
         _short_tmpdir_for_podman()
 
@@ -541,5 +656,8 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--reap":
         _reap_main(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 7 and sys.argv[1] == "--reap-pid":
+        _reap_pid_main(sys.argv[2], sys.argv[3], int(sys.argv[4]),
+                       sys.argv[5], sys.argv[6])
     else:
         main()
