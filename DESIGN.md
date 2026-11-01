@@ -226,7 +226,10 @@ with the automatic systemd-run re-execution.
 ### Startup
 
 ```
-1. Generate cluster name: kind-<uuid[:12]>
+1. Generate cluster name: kind-<uuid[:12]>; log to ~/.local/state/rules_kind/<name>.log
+   Sweep stale clusters (see Ownership records and sweep)
+   Take a cluster slot; optionally wait for RULES_KIND_MIN_FREE_MB (see Admission)
+   Write the ownership record; start the reaper
 2. kind create cluster --name <name> [--config <config_file>] [--image <digest-pinned kindest/node image for k8s_version>]
 3. kind get kubeconfig --name <name> > $TEST_TMPDIR/kubeconfig
 4. Poll kubectl cluster-info until API server responds (max 120 s)
@@ -239,16 +242,21 @@ with the automatic systemd-run re-execution.
 ```
 
 Before step 2 the launcher installs its SIGTERM + SIGINT handlers and, unless
-`RULES_KIND_KEEP_CLUSTER` is set, starts the reaper (see Shutdown).
+`RULES_KIND_KEEP_CLUSTER` is set, writes the ownership record and starts the
+reaper (see Shutdown). A signal while waiting for a slot ends the launcher
+with nothing to clean up: no record or cluster exists yet.
 
 ### Shutdown
 
 ```
 SIGTERM / SIGINT received, or parent pid changed
   ↓
-kind delete cluster --name <name>
+kind delete cluster --name <name>       (600 s timeout)
   ↓
-tell the reaper teardown is done
+confirm: `kind get clusters` doesn't list it and no container has its label
+  ↓ confirmed                          ↓ not confirmed
+remove the record, release the reaper, leave the reaper running; it retries
+remove the log                         once the launcher has exited
   ↓
 exit(0)
 ```
@@ -265,6 +273,13 @@ Signals alone are not enough (#9):
   and tears down when it changes.
 - **rules_itest SIGKILLs the process group after `shutdown_timeout`** (default
   1 s), which can interrupt `kind delete cluster`.
+- **`kind delete` can fail or be cut short and leave stopped nodes** that
+  kind still lists (`Exited (137)`), on a loaded host especially (#14).
+  Before v0.3.0 the launcher released the reaper after any delete attempt, so
+  nothing retried. Now only a confirmed deletion releases it.
+- **The launcher's stdout can be a closed pipe** by the time it tears down
+  (rules_itest has exited). `_log` catches `BrokenPipeError` and points stdout
+  at `/dev/null`, so the teardown still reaches `kind delete` (#12).
 
 ### Reaper
 
@@ -283,9 +298,11 @@ launcher's environment is passed through with `--setenv=NAME` (a service
 otherwise gets the user manager's environment). The reaper polls
 `/proc/<pid>/stat` once a second; pid plus start time (field 22) identifies
 the launcher even if the pid is reused. When the launcher is gone it runs
-`kind delete cluster`, which is harmless if the cluster is already gone.
-After a finished teardown the launcher runs `systemctl --user stop
---no-block` on the unit, so the usual case doesn't run a second delete.
+`kind delete cluster` and checks the result like the launcher does,
+retrying with backoff (5 s doubling to 60 s) for up to 30 minutes; after that
+the record stays for the next launcher's sweep. After a confirmed teardown
+the launcher runs `systemctl --user stop --no-block` on the unit, so the
+usual case doesn't run a second delete.
 
 **Child process (fallback).** If `systemd-run --user` fails (no user
 manager, no D-Bus), the launcher starts `launcher.py --reap <kind> <name>`
@@ -302,10 +319,62 @@ launcher was SIGKILLed during rules_itest's shutdown were left stuck in
 "Stopping". `reaper_outlives_test` reproduces that case; CI's "No kind
 clusters left behind" step checks the outcome after `bazel test` returns.
 
-Output goes to `$TEST_TMPDIR/<target>.reaper.log` in both modes.
+Output goes to `~/.local/state/rules_kind/<cluster>.log` (same file as the
+launcher's own log) in both modes. Before v0.3.0 it went to
+`$TEST_TMPDIR/<target>.reaper.log`, which Bazel removes with the test, so a
+failed reaper left no trace.
 
 `RULES_KIND_KEEP_CLUSTER=1` disables both the launcher's deletion and the
-reaper, and logs the command to delete the cluster by hand.
+reaper, writes no ownership record, and logs the command to delete the
+cluster by hand.
+
+### Ownership records and sweep
+
+`$XDG_STATE_HOME/rules_kind` (default `~/.local/state/rules_kind`, from the
+passwd home because Bazel sets `HOME=$TEST_TMPDIR`) holds, per cluster:
+
+- `<cluster>.json` — the ownership record: boot id, launcher pid + start
+  time, runtime, target, and the reaper (unit name, or pid + start time).
+  Written before `kind create`; removed by whoever confirms the deletion.
+- `<cluster>.log` — launcher and reaper log. Removed after a clean teardown;
+  logs without a record are pruned after 7 days.
+
+Every launcher, before taking a slot, sweeps the records: a record whose
+launcher is not alive (another boot, or the pid has another start time) and
+whose reaper is not alive (unit inactive, or pid gone) belongs to a leaked
+cluster, which it deletes (one confirmed attempt; the record stays if that
+fails). A non-blocking `flock` on the record keeps two launchers from
+sweeping the same cluster. The sweep only sees this user's records and only
+clusters of the runtime the launcher detected. `launcher.py --sweep <kind>`
+runs it by hand.
+
+The sweep deletes leaked clusters whether or not their nodes still run: the
+record proves rules_kind created them, and with launcher and reaper gone
+nobody else will. Clusters from before v0.3.0 have no record and are left
+alone.
+
+### Admission
+
+A launcher takes one of `RULES_KIND_MAX_CLUSTERS` (default 2; `0` = no limit)
+slots before `kind create cluster`: `slot-<i>` files in
+`RULES_KIND_SLOT_DIR` (default `$XDG_RUNTIME_DIR/rules_kind/slots`, per user),
+each locked with a non-blocking `flock` and polled every 2 s. The fd stays open
+until the launcher exits, and the kernel releases the lock on any exit,
+SIGKILL included; fds are not inherited by children (Python's default), so
+`conmon` and friends can't keep a slot. The holder writes its cluster, pid
+and target into the slot file, and a waiting launcher logs those holders once
+a minute. Slot files are mode 0666 so that a directory shared between users
+(mode 1777) works. With `RULES_KIND_MIN_FREE_MB` the launcher also waits,
+after taking the slot, until `/proc/meminfo`'s `MemAvailable` reaches it.
+
+Why 2: one cluster per user serializes even small clusters on large
+machines; three full-platform clusters (#15) exhausted a 16-core, 125 GB
+host. The waiting time counts against the test's timeout; rules_itest has no
+health-check timeout unless `health_check_timeout` is set.
+
+The limit is per user by default because the issue's suggested directory,
+`$XDG_RUNTIME_DIR`, is per user, and a world-writable default would let any
+user hold every slot. `RULES_KIND_SLOT_DIR` opts a host into a shared limit.
 
 ---
 
@@ -442,9 +511,8 @@ Failures surface as `bazel build` errors, not as runtime failures.
 
 ## Phase 2
 
-- **`kind_cleanup` tool**: `bazel run //tools:kind_cleanup` prunes orphaned
-  kind clusters left when the reaper itself could not run (host reboot,
-  container runtime down at teardown).
+- **`kind_cleanup` tool**: `bazel run //tools:kind_cleanup` wrapping
+  `launcher.py --sweep` (v0.3.0) with the right kind binary.
 - **Local registry**: optional `kind_registry` rule that starts a local Docker
   registry inside the kind cluster, eliminating the need to `kind load` large
   images.
@@ -476,9 +544,12 @@ Failures surface as `bazel build` errors, not as runtime failures.
   registry for images larger than ~200 MB.
 - **Orphaned clusters when the reaper cannot run.** The reaper covers launcher
   crashes and kills, but not a host reboot or a container runtime that is down
-  at teardown, and without a systemd user instance it doesn't survive the end
-  of the test (see Reaper). The `kind_cleanup` tool (Phase 2) will address
-  this.
+  for its whole 30-minute retry window, and without a systemd user instance it
+  doesn't survive the end of the test (see Reaper). The next launcher's sweep
+  deletes such clusters (see Ownership records and sweep); until a launcher
+  runs, they stay.
+- **The cluster limit is per user by default** (`RULES_KIND_SLOT_DIR` shares
+  it) and counts launchers, not cluster size.
 - **Target name collision.** Two `kind_cluster` targets with the same local
   name in different packages write to the same env file path.
 - **Windows not supported** (no pre-built binary source; PRs welcome).

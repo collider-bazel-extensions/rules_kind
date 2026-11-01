@@ -36,7 +36,8 @@ rules_kind/
     ├── manifest_test.sh             # Manifest applied before env file written
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
-    ├── cluster_cleanup_test.sh      # Cluster deleted on SIGKILL / orphaning; keep switch; reaper unit
+    ├── launcher_unit_test.sh        # No runtime: cluster slots, RULES_KIND_SLOT_DIR, _log on a closed stdout
+    ├── cluster_cleanup_test.sh      # SIGKILL / orphaning / keep / SIGKILL mid-delete / --sweep; records removed
     ├── reaper_outlives_test.sh      # SIGKILLs the launcher and exits; CI checks the cluster is gone
     ├── k8s_version_test.sh          # Per-minor (1.35/1.36/1.37): server gitVersion + kubectl minor
     └── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
@@ -122,9 +123,12 @@ same (see `tests/cluster_cleanup_test.sh`).
 ### Cluster lifecycle
 
 ```
-_allocate_cluster_name()   → kind-<uuid>
+_allocate_cluster_name()   → kind-<uuid>; log to ~/.local/state/rules_kind/<name>.log
   ↓
-install SIGTERM + SIGINT handlers; start reaper (systemd user unit, else own session)
+sweep stale recorded clusters → take a slot (RULES_KIND_MAX_CLUSTERS, default 2)
+  ↓
+write ownership record; start reaper (systemd user unit, else own session);
+install SIGTERM + SIGINT handlers
   ↓
 kind create cluster --name <name> --config <config>
   ↓
@@ -138,7 +142,8 @@ write $TEST_TMPDIR/<name>.env atomically   ← readiness signal
   ↓
 wait until signalled or the parent pid changes
   ↓
-kind delete cluster --name <name> → stop the reaper unit / tell reaper "done"
+kind delete cluster --name <name> → confirmed gone? → remove record + log,
+stop the reaper unit / tell reaper "done"; otherwise leave it to the reaper
 ```
 
 ### Cluster cleanup
@@ -158,9 +163,28 @@ rules_itest does not signal services when the test fails (`svcinit` calls
   <name>`, `start_new_session=True`, holding a pipe from the launcher. EOF
   without `done` → it deletes the cluster. Only covers deaths while the test
   is still running.
-- Output: `$TEST_TMPDIR/<target>.reaper.log`.
+- A delete counts only when `kind get clusters` no longer lists it and no
+  container has its `io.x-k8s.kind.cluster` label. Only then is the reaper
+  released; the reaper retries with backoff for 30 min (#14).
+- Ownership record `~/.local/state/rules_kind/<cluster>.json`
+  (`$XDG_STATE_HOME`); every launcher first deletes recorded clusters whose
+  launcher and reaper are gone (`launcher.py --sweep <kind>` by hand).
+- Output: `~/.local/state/rules_kind/<cluster>.log` (launcher + reaper);
+  removed after a clean teardown, else pruned after 7 days.
+- `_log` survives a closed stdout (rules_itest gone), so teardown still
+  reaches `kind delete` (#12).
 - `RULES_KIND_KEEP_CLUSTER=1` (e.g. `--test_env=RULES_KIND_KEEP_CLUSTER=1`)
-  keeps the cluster and logs the delete command.
+  keeps the cluster, writes no record, and logs the delete command.
+
+### Concurrent clusters (#15)
+
+Before `kind create`, the launcher takes one of `RULES_KIND_MAX_CLUSTERS`
+(default 2, `0` = no limit) slots: `flock`ed files in `RULES_KIND_SLOT_DIR`
+(default `$XDG_RUNTIME_DIR/rules_kind/slots`, per user; mode 0666 so a shared
+1777 dir works), held until the launcher exits. Waiting logs the holders
+once a minute and has no timeout of its own. `RULES_KIND_MIN_FREE_MB`
+optionally waits for `MemAvailable`. Tests that wait for a cluster must
+allow for the slot wait (the in-tree tests wait up to 600 s).
 
 ### Binary acquisition
 
@@ -312,14 +336,15 @@ All tests must pass before any commit with code changes.
 
 ### Test results (last full run: 2026-10-30)
 
-All 11 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 12 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
 | `//tests:checksums_test`           | every `_KIND_VERSIONS` entry has a 64-hex SHA-256 (no network, no runtime)        | PASSED |
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
-| `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL and after parent exit; keep switch works; reaper is a systemd user unit | PASSED |
+| `//tests:launcher_unit_test`       | slot limit waits and names the holder, SIGKILL frees the slot, `0` = no limit, `RULES_KIND_SLOT_DIR`; `_log` on a closed stdout (no runtime) | PASSED |
+| `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL, after parent exit, after SIGKILL mid-delete, and by `--sweep` once launcher and reaper are gone; records removed; keep switch; reaper is a systemd user unit | PASSED |
 | `//tests:reaper_outlives_test`     | launcher SIGKILLed, test exits at once; cluster deleted afterwards (checked after `bazel test` returns) | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
 | `//tests:manifest_test`            | ConfigMap from manifests present in cluster after env file written                | PASSED |
@@ -351,9 +376,12 @@ systemd-run --scope --user --property=Delegate=yes -- \
 9. Writes `$TEST_TMPDIR/<name>.env` atomically.
 10. Waits until SIGTERM/SIGINT (handlers installed before step 4) or until its
     parent pid changes.
-11. Runs `kind delete cluster --name <name>`, stops the reaper unit (or
-    tells the child reaper it is done), exits 0. If the launcher dies first,
-    the reaper deletes the cluster.
+11. Runs `kind delete cluster --name <name>` and confirms the cluster is gone;
+    then removes its record, stops the reaper unit (or tells the child reaper
+    it is done), exits 0. If the delete doesn't stick or the launcher dies
+    first, the reaper deletes the cluster, retrying.
+
+Before step 4 it also sweeps stale recorded clusters and takes a cluster slot.
 
 ### Test script requirements
 

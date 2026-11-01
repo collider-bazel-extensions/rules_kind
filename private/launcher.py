@@ -22,6 +22,20 @@ Cleanup:
   running. Set RULES_KIND_KEEP_CLUSTER=1 to leave the cluster running for
   debugging.
 
+  A delete counts only once `kind get clusters` no longer lists the cluster
+  and no container carries its label. The launcher releases the reaper only
+  then; otherwise the reaper retries with backoff for up to 30 minutes. Each
+  cluster has an ownership record and a log in $XDG_STATE_HOME/rules_kind
+  (default ~/.local/state/rules_kind), and every launcher first deletes
+  recorded clusters whose launcher and reaper are both gone.
+
+Admission:
+  At most RULES_KIND_MAX_CLUSTERS (default 2; 0 = no limit) launchers per user
+  run a cluster at once: each holds a flock on a slot file under
+  $XDG_RUNTIME_DIR/rules_kind/slots until it exits (the kernel drops the lock
+  on SIGKILL too). RULES_KIND_SLOT_DIR shares the slots between users.
+  Optionally RULES_KIND_MIN_FREE_MB waits for MemAvailable.
+
 Container runtime:
   By default, Docker is used. If Docker is unavailable, podman is used
   automatically (KIND_EXPERIMENTAL_PROVIDER=podman). Rootless podman requires
@@ -31,6 +45,7 @@ Container runtime:
 
 import atexit
 import dataclasses
+import fcntl
 import json
 import os
 import pwd
@@ -48,8 +63,33 @@ import uuid
 # Utilities
 # ---------------------------------------------------------------------------
 
+# Persistent per-cluster log (see _state_dir); set once the name is known.
+_LOG_FILE = None
+
+
 def _log(msg):
-    print(f"[rules_kind] {msg}", flush=True)
+    line = f"[rules_kind] {msg}"
+    if _LOG_FILE:
+        try:
+            with open(_LOG_FILE, "a") as f:
+                f.write(time.strftime("%Y-%m-%dT%H:%M:%S ") + line + "\n")
+        except OSError:
+            pass
+    try:
+        print(line, flush=True)
+    except (BrokenPipeError, OSError):
+        # The reader is gone (rules_itest exited after a failed test). Keep
+        # going: teardown must still reach `kind delete`.
+        _detach_stdout()
+
+
+def _detach_stdout():
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(fd, sys.stdout.fileno())
+        os.close(fd)
+    except (OSError, ValueError):
+        pass
 
 
 def _find_runfile(rel_path, workspace=""):
@@ -203,6 +243,14 @@ def _best_effort_rmtree(path):
         pass
 
 
+def _real_home():
+    """The passwd home; Bazel's test runner points $HOME at $TEST_TMPDIR."""
+    try:
+        return pwd.getpwuid(os.getuid()).pw_dir or None
+    except KeyError:
+        return None
+
+
 def _use_real_home_for_containers():
     """Keep rootless podman's storage and config in the user's real home.
 
@@ -215,10 +263,7 @@ def _use_real_home_for_containers():
     the passwd home fixes both. kind and kubectl read `$HOME` (for
     `~/.kube/config`), not these, so they stay inside the test's tmpdir.
     """
-    try:
-        home = pwd.getpwuid(os.getuid()).pw_dir
-    except KeyError:
-        return
+    home = _real_home()
     if not home or os.environ.get("HOME") == home:
         return
     os.environ.setdefault("XDG_DATA_HOME", os.path.join(home, ".local", "share"))
@@ -423,6 +468,7 @@ def _start_reaper_unit(kind_bin, cluster_name, env, log_path):
              f"({result.stderr.strip()[:200]}); using a child process")
         return None
     _log(f"reaper: systemd user unit {unit}")
+    _write_record(cluster_name, reaper_unit=unit)
     return unit
 
 
@@ -437,7 +483,7 @@ def _start_reaper(kind_bin, cluster_name, env, log_path):
         return unit
     log = open(log_path, "ab")
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__),
              "--reap", kind_bin, cluster_name],
             stdin=subprocess.PIPE, stdout=log, stderr=log,
@@ -445,10 +491,14 @@ def _start_reaper(kind_bin, cluster_name, env, log_path):
         )
     finally:
         log.close()
+    _write_record(cluster_name, reaper_pid=proc.pid,
+                  reaper_start_time=_proc_start_time(proc.pid))
+    return proc
 
 
 def _release_reaper(reaper):
-    """Tell the reaper teardown is finished, so it exits without deleting."""
+    """Tell the reaper the cluster is gone, so it exits without deleting.
+    Only called after _delete_cluster confirmed the deletion."""
     if reaper is None:
         return
     if isinstance(reaper, str):
@@ -469,15 +519,14 @@ def _reap_main(kind_bin, cluster_name):
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     if sys.stdin.buffer.read() == b"done":
         return
-    _log(f"launcher exited without tearing down {cluster_name}")
+    _log(f"launcher exited without confirming {cluster_name} is deleted")
     _reap_delete(kind_bin, cluster_name)
 
 
 def _reap_pid_main(kind_bin, cluster_name, pid, start_time, log_path):
     """Reaper mode under systemd: poll the launcher (pid + start time) and
-    delete the cluster once it is gone. The launcher stops this unit after
-    a finished teardown; if it is killed first, `kind delete` here is
-    harmless on an already deleted cluster."""
+    delete the cluster once it is gone, retrying until it is. The launcher
+    stops this unit once it has confirmed the deletion itself."""
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     os.dup2(fd, 1)
     os.dup2(fd, 2)
@@ -493,18 +542,295 @@ def _reap_delete(kind_bin, cluster_name):
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
         os.makedirs(tmpdir, exist_ok=True)
-    _delete_cluster(kind_bin, cluster_name, os.environ.copy())
+    _delete_until_gone(kind_bin, cluster_name, os.environ.copy())
     if tmpdir and os.path.basename(tmpdir).startswith("rules_kind-tmp-"):
         _best_effort_rmtree(tmpdir)
 
 
+# A single `kind delete` on a loaded host can take minutes.
+_DELETE_TIMEOUT_S = 600
+# How long the reaper keeps retrying a delete that does not stick.
+_REAPER_DEADLINE_S = 30 * 60
+
+
+def _runtime_cli(env):
+    return "podman" if env.get("KIND_EXPERIMENTAL_PROVIDER") == "podman" else "docker"
+
+
+def _cluster_gone(kind_bin, cluster_name, env):
+    """True once kind no longer lists the cluster and no container carries
+    its label. A killed or failed delete can leave stopped nodes behind
+    (`Exited (137)`) that kind still lists."""
+    try:
+        r = subprocess.run([kind_bin, "get", "clusters"], capture_output=True,
+                           text=True, env=env, timeout=120)
+        if r.returncode != 0 or cluster_name in r.stdout.split():
+            return False
+        r = subprocess.run(
+            [_runtime_cli(env), "ps", "-a", "-q", "--filter",
+             f"label=io.x-k8s.kind.cluster={cluster_name}"],
+            capture_output=True, text=True, env=env, timeout=120)
+        return r.returncode == 0 and not r.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _delete_cluster(kind_bin, cluster_name, env):
+    """One `kind delete`, then check. Returns True if the cluster is gone."""
     _log(f"deleting cluster {cluster_name}…")
     try:
-        _run([kind_bin, "delete", "cluster", "--name", cluster_name], env=env)
-        _log("cluster deleted")
+        _run([kind_bin, "delete", "cluster", "--name", cluster_name], env=env,
+             timeout=_DELETE_TIMEOUT_S)
     except Exception as e:
-        _log(f"warning: cluster deletion failed: {e}")
+        _log(f"warning: kind delete failed: {e}")
+    if _cluster_gone(kind_bin, cluster_name, env):
+        _log("cluster deleted")
+        _forget_cluster(cluster_name)
+        return True
+    _log(f"warning: cluster {cluster_name} is still present after kind delete")
+    return False
+
+
+def _delete_until_gone(kind_bin, cluster_name, env, deadline_s=_REAPER_DEADLINE_S):
+    """Retry _delete_cluster with backoff (5 s doubling to 60 s)."""
+    end = time.monotonic() + deadline_s
+    delay = 5
+    while not _delete_cluster(kind_bin, cluster_name, env):
+        if time.monotonic() + delay > end:
+            _log(f"giving up on {cluster_name} after {deadline_s} s; the next "
+                 "launcher's sweep retries it")
+            return False
+        _log(f"retrying in {delay} s")
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Ownership records, logs and the stale-cluster sweep
+# ---------------------------------------------------------------------------
+
+def _state_dir():
+    """$XDG_STATE_HOME/rules_kind (default ~/.local/state/rules_kind, from
+    the passwd home): logs and records that outlive $TEST_TMPDIR."""
+    base = os.environ.get("XDG_STATE_HOME")
+    if not base:
+        home = _real_home() or tempfile.gettempdir()
+        base = os.path.join(home, ".local", "state")
+    d = os.path.join(base, "rules_kind")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _record_path(cluster_name):
+    return os.path.join(_state_dir(), cluster_name + ".json")
+
+
+def _write_record(cluster_name, **fields):
+    """Create or update the ownership record of a cluster."""
+    path = _record_path(cluster_name)
+    rec = {}
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        pass
+    rec.update(fields, cluster=cluster_name)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rec, f)
+    os.replace(tmp, path)
+
+
+def _forget_cluster(cluster_name):
+    try:
+        os.remove(_record_path(cluster_name))
+    except OSError:
+        pass
+
+
+def _alive(boot_id, pid, start_time):
+    """True if the process (pid + start time, this boot) still runs."""
+    return (bool(boot_id) and boot_id == _boot_id() and pid is not None
+            and _proc_start_time(pid) == start_time)
+
+
+def _reaper_alive(rec):
+    unit = rec.get("reaper_unit")
+    if unit:
+        r = subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
+                           capture_output=True, env=_systemd_user_env())
+        if r.returncode == 0:
+            return True
+    return _alive(rec.get("boot_id"), rec.get("reaper_pid"),
+                  rec.get("reaper_start_time"))
+
+
+_LOG_RETENTION_S = 7 * 24 * 3600
+
+
+def _sweep_stale_clusters(kind_bin, env, runtime):
+    """Delete recorded clusters whose launcher and reaper are both gone, and
+    prune old logs. Only this user's records are considered; clusters kept
+    with RULES_KIND_KEEP_CLUSTER have none."""
+    try:
+        d = _state_dir()
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in sorted(names):
+        path = os.path.join(d, n)
+        if n.endswith(".log") and not os.path.exists(path[:-4] + ".json"):
+            try:
+                if time.time() - os.path.getmtime(path) > _LOG_RETENTION_S:
+                    os.remove(path)
+            except OSError:
+                pass
+            continue
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(path) as f:
+                rec = json.load(f)
+            name = rec["cluster"]
+        except (OSError, ValueError, KeyError):
+            continue
+        if rec.get("runtime", runtime) != runtime:
+            continue
+        if _alive(rec.get("boot_id"), rec.get("pid"), rec.get("start_time")):
+            continue
+        if _reaper_alive(rec):
+            continue
+        # Another launcher may be sweeping the same record.
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            continue
+        try:
+            _log(f"sweep: {name} was left by launcher pid {rec.get('pid')}, "
+                 "which is gone; deleting it")
+            _delete_cluster(kind_bin, name, env)
+        finally:
+            os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# Admission: a per-user limit on concurrent clusters
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MAX_CLUSTERS = 2
+
+
+def _env_int(name, default):
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        _log(f"warning: ignoring {name}={raw!r} (not an integer)")
+        return default
+
+
+def _slot_dir():
+    """RULES_KIND_SLOT_DIR, or $XDG_RUNTIME_DIR/rules_kind/slots (per user).
+    Point several users at one directory (e.g. a mode-1777 /var/tmp dir) to
+    share the limit across them."""
+    d = os.environ.get("RULES_KIND_SLOT_DIR")
+    if d:
+        os.makedirs(d, exist_ok=True)
+        return d
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    if not os.path.isdir(runtime_dir):
+        runtime_dir = os.path.join(tempfile.gettempdir(), f"rules_kind-{os.getuid()}")
+    d = os.path.join(runtime_dir, "rules_kind", "slots")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def _acquire_slot(cluster_name, target):
+    """Block until one of RULES_KIND_MAX_CLUSTERS slots is free and return
+    its fd (kept open, i.e. locked, until the launcher exits), or None when
+    there is no limit. The wait has no timeout of its own; the test's
+    timeout bounds it."""
+    limit = _env_int("RULES_KIND_MAX_CLUSTERS", _DEFAULT_MAX_CLUSTERS)
+    if limit <= 0:
+        return None
+    d = _slot_dir()
+    last_report = None
+    while True:
+        holders = []
+        for i in range(limit):
+            path = os.path.join(d, f"slot-{i}")
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+            try:
+                # Lockable by every user sharing RULES_KIND_SLOT_DIR (the
+                # default directory is private to the user anyway).
+                os.fchmod(fd, 0o666)
+            except OSError:
+                pass  # created by another user
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                try:
+                    holders.append(os.read(fd, 4096).decode(errors="replace").strip())
+                except OSError:
+                    pass
+                os.close(fd)
+                continue
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{cluster_name} pid {os.getpid()} target {target} "
+                         f"since {time.strftime('%H:%M:%S')}".encode())
+            _log(f"cluster slot {i + 1}/{limit} acquired")
+            return fd
+        now = time.monotonic()
+        if last_report is None or now - last_report >= 60:
+            _log(f"waiting for a cluster slot (RULES_KIND_MAX_CLUSTERS={limit}); "
+                 "held by: " + "; ".join(h or "?" for h in holders))
+            last_report = now
+        time.sleep(2)
+
+
+def _mem_available_mb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _wait_free_memory():
+    """With RULES_KIND_MIN_FREE_MB set, wait until MemAvailable reaches it."""
+    want = _env_int("RULES_KIND_MIN_FREE_MB", 0)
+    if want <= 0:
+        return
+    last_report = None
+    while True:
+        have = _mem_available_mb()
+        if have is None or have >= want:
+            return
+        now = time.monotonic()
+        if last_report is None or now - last_report >= 60:
+            _log(f"waiting for memory: {have} MB available, "
+                 f"RULES_KIND_MIN_FREE_MB={want}")
+            last_report = now
+        time.sleep(5)
 
 
 # ---------------------------------------------------------------------------
@@ -582,9 +908,18 @@ def main():
     output_env     = os.path.join(test_tmpdir, f"{cluster_target_name}.env")
     keep           = _keep_cluster()
 
+    global _LOG_FILE
+    log_path = os.path.join(_state_dir(), f"{cluster_name}.log")
+    _LOG_FILE = log_path
+
     _log(f"cluster name: {cluster_name}")
     _log(f"env file:     {output_env}")
     _log(f"runtime:      {runtime}")
+    _log(f"log:          {log_path}")
+
+    _sweep_stale_clusters(kind_bin, env, runtime)
+    slot = _acquire_slot(cluster_name, cluster_target_name)  # noqa: F841 (held until exit)
+    _wait_free_memory()
 
     # rules_itest exits without signalling its services when the test fails,
     # leaving us orphaned. Watch for that by checking our parent pid.
@@ -594,17 +929,28 @@ def main():
     if keep:
         _log("RULES_KIND_KEEP_CLUSTER is set: the cluster will not be deleted")
     else:
-        reaper = _start_reaper(
-            kind_bin, cluster_name, env,
-            os.path.join(test_tmpdir, f"{cluster_target_name}.reaper.log"))
+        pid = os.getpid()
+        _write_record(cluster_name, boot_id=_boot_id(), pid=pid,
+                      start_time=_proc_start_time(pid), runtime=runtime,
+                      target=cluster_target_name, test_tmpdir=test_tmpdir)
+        reaper = _start_reaper(kind_bin, cluster_name, env, log_path)
 
     def _teardown():
         if keep:
             _log(f"keeping cluster {cluster_name}; delete it with: "
                  f"kind delete cluster --name {cluster_name}")
+        elif _delete_cluster(kind_bin, cluster_name, env):
+            _release_reaper(reaper)
+            # A clean teardown needs no log beyond the test's own output.
+            global _LOG_FILE
+            _LOG_FILE = None
+            try:
+                os.remove(log_path)
+            except OSError:
+                pass
         else:
-            _delete_cluster(kind_bin, cluster_name, env)
-        _release_reaper(reaper)
+            # Not released: the reaper retries once this launcher is gone.
+            _log("leaving the cluster to the reaper")
 
     def _shutdown(signum, _frame):
         _log(f"received signal {signum}, shutting down…")
@@ -659,5 +1005,11 @@ if __name__ == "__main__":
     elif len(sys.argv) == 7 and sys.argv[1] == "--reap-pid":
         _reap_pid_main(sys.argv[2], sys.argv[3], int(sys.argv[4]),
                        sys.argv[5], sys.argv[6])
+    elif len(sys.argv) == 3 and sys.argv[1] == "--sweep":
+        # Delete this user's recorded clusters whose launcher and reaper are
+        # gone: `python3 launcher.py --sweep <kind binary>`.
+        _use_real_home_for_containers()
+        _rt, _rt_env = _detect_runtime()
+        _sweep_stale_clusters(sys.argv[2], _kind_env(_rt_env), _rt)
     else:
         main()

@@ -30,9 +30,9 @@ rm -f "$env_file"
 pid=$!
 trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true' EXIT
 
-deadline=$(( $(date +%s) + 240 ))
+deadline=$(( $(date +%s) + 600 ))
 while [[ ! -f "$env_file" ]]; do
-    [[ $(date +%s) -le $deadline ]] || { echo "FAIL: env file not written within 240 s" >&2; exit 1; }
+    [[ $(date +%s) -le $deadline ]] || { echo "FAIL: env file not written within 600 s (slot wait included)" >&2; exit 1; }
     kill -0 "$pid" 2>/dev/null || { echo "FAIL: launcher exited before writing env file" >&2; exit 1; }
     sleep 2
 done
