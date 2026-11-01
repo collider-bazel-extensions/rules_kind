@@ -334,7 +334,7 @@ linux-sandbox so the Docker socket is accessible.
 
 All tests must pass before any commit with code changes.
 
-### Test results (last full run: 2026-10-30)
+### Test results (last full run: 2026-11-01, CI: Docker + rootless podman)
 
 All 12 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
