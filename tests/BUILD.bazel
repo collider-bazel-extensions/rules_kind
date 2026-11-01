@@ -58,6 +58,17 @@ sh_test(
 )
 
 # ---------------------------------------------------------------------------
+# launcher_unit_test — no Docker required
+# Tests: RULES_KIND_MAX_CLUSTERS slots (#15); _log on a closed stdout (#12).
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name = "launcher_unit_test",
+    srcs = ["launcher_unit_test.sh"],
+    data = ["//private:launcher.py"],
+)
+
+# ---------------------------------------------------------------------------
 # kind_server_test — requires Docker
 # Tests: kind_cluster starts, writes env file, env vars present, SIGTERM shuts down.
 # ---------------------------------------------------------------------------

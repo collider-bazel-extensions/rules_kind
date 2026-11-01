@@ -41,12 +41,13 @@ rm -f "$env_file"
 launcher_pid=$!
 trap 'kill "$launcher_pid" 2>/dev/null; wait "$launcher_pid" 2>/dev/null || true' EXIT
 
-# Wait up to 120 seconds for the env file to appear.
+# Wait up to 600 seconds for the env file to appear (includes waiting for
+# a RULES_KIND_MAX_CLUSTERS slot while other cluster tests run).
 echo "waiting for cluster env file…"
-deadline=$(( $(date +%s) + 120 ))
+deadline=$(( $(date +%s) + 600 ))
 while [[ ! -f "$env_file" ]]; do
     if [[ $(date +%s) -gt $deadline ]]; then
-        echo "FAIL: env file not written within 120 seconds" >&2
+        echo "FAIL: env file not written within 600 seconds" >&2
         exit 1
     fi
     if ! kill -0 "$launcher_pid" 2>/dev/null; then

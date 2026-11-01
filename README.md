@@ -69,7 +69,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.2.1")
+bazel_dep(name = "rules_kind", version = "0.3.0")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -538,8 +538,24 @@ The cluster is deleted when the test ends, whether it passed or failed:
   without stopping its services. The launcher notices its parent is gone and
   deletes the cluster.
 - **Launcher killed** (SIGKILL, crash, or `rules_itest`'s `shutdown_timeout`
-  expiring mid-delete) — a reaper deletes the cluster. Its output goes to
-  `$TEST_TMPDIR/<name>.reaper.log`.
+  expiring mid-delete) — a reaper deletes the cluster.
+- **Delete fails or doesn't stick** — a delete counts only once `kind get
+  clusters` no longer lists the cluster and no container carries its
+  `io.x-k8s.kind.cluster` label. Until then the launcher keeps the reaper,
+  which retries `kind delete` with backoff (5 s doubling to 60 s) for up to
+  30 minutes. Before v0.3.0 a failed or interrupted delete released the
+  reaper anyway and could leave stopped nodes (`Exited (137)`) registered.
+- **Launcher and reaper both gone** (host reboot, reaper gave up) — each
+  cluster has an ownership record in `~/.local/state/rules_kind/<cluster>.json`
+  (`$XDG_STATE_HOME/rules_kind`). Every launcher first deletes the recorded
+  clusters whose launcher (pid + start time) and reaper are gone. Run the same
+  sweep by hand with `python3 <path to launcher.py> --sweep <kind binary>`.
+  Clusters left by rules_kind before v0.3.0 have no record; delete them
+  with `kind delete cluster --name <name>`.
+
+The launcher and reaper log to `~/.local/state/rules_kind/<cluster>.log`,
+which outlives `$TEST_TMPDIR`. A clean teardown removes it; other logs are
+pruned after 7 days.
 
   Bazel kills every process a test leaves running once the test exits, so
   the reaper runs as a transient **systemd user service**
@@ -560,6 +576,53 @@ bazel test //my:e2e_test --test_env=RULES_KIND_KEEP_CLUSTER=1
 
 The launcher logs the cluster name and the `kind delete cluster` command to
 remove it later.
+
+**Letting the launcher finish its own delete.** `rules_itest` SIGKILLs a
+service `shutdown_timeout` (default 1 s) after SIGTERM, and on a failed test
+it exits without signalling its services at all. Either way the reaper
+deletes the cluster after the test, but its delete then runs while the next
+test may be starting. To have the launcher delete the cluster before the test
+finishes, give the kind service time:
+
+```python
+itest_service(
+    name = "k8s_svc",
+    exe = ":k8s",
+    health_check = ":k8s_health",
+    shutdown_timeout = "300s",
+)
+```
+
+For failed tests, the `service_test`'s `test` can be a wrapper that runs
+the real test and, if it fails, calls svcctl
+(`curl "http://127.0.0.1:$SVCCTL_PORT/v0/kill?service=<label>&signal=SIGTERM"`),
+which returns once the launcher has exited, before exiting with the test's
+status.
+
+### Concurrent clusters
+
+kind clusters are heavy: several starting at once (separate worktrees, CI
+jobs on one runner, a `bazel test` with many cluster tests) can exhaust
+memory and make every one of them fail in ways that look like real
+regressions. The launcher therefore takes a slot before `kind create
+cluster`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RULES_KIND_MAX_CLUSTERS` | `2` | Clusters that may run at once; `0` = no limit. |
+| `RULES_KIND_SLOT_DIR` | `$XDG_RUNTIME_DIR/rules_kind/slots` | Slot lock files. The default is per user; point several users at one shared directory (e.g. `mkdir -m 1777 /var/tmp/rules_kind-slots`) to share the limit across them. |
+| `RULES_KIND_MIN_FREE_MB` | unset | After taking a slot, also wait until `MemAvailable` reaches this. |
+
+Each slot is a file locked with `flock` for the launcher's lifetime; the
+kernel drops the lock when the launcher exits, SIGKILL included. A waiting
+launcher logs which clusters hold the slots, once a minute. The wait has no
+timeout of its own: it counts against the test's timeout (and a
+`health_check_timeout`, if the `itest_service` sets one), not against the
+launcher's readiness timeouts. Bazel passes these variables only when asked:
+
+```sh
+bazel test //... --test_env=RULES_KIND_MAX_CLUSTERS=4
+```
 
 ---
 

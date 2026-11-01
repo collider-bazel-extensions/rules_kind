@@ -63,11 +63,13 @@ jobs:
         # extensions.bzl's _KIND_VERSIONS table.
         # --local_test_jobs=2: eight cluster tests starting at once on a
         # 4-vCPU runner made `docker info` take >5 s and three launchers
-        # misreported "no container runtime" (PR #11's first run).
+        # misreported "no container runtime" (PR #11's first run). The
+        # launcher's default RULES_KIND_MAX_CLUSTERS=2 also caps clusters.
         run: |
           bazel test \
             //tests:checksums_test \
             //tests:kind_health_check_test \
+            //tests:launcher_unit_test \
             //tests:kind_server_test \
             //tests:cluster_cleanup_test \
             //tests:reaper_outlives_test \
@@ -87,13 +89,19 @@ jobs:
         run: |
           set -euo pipefail
           rt=${{ matrix.runtime }}
+          state=~/.local/state/rules_kind
           for _ in $(seq 1 60); do
             left=$($rt ps -a --filter label=io.x-k8s.kind.cluster --format '{{.Names}}')
-            [[ -z "$left" ]] && { echo "no kind clusters left"; exit 0; }
+            records=$(ls "$state"/*.json 2>/dev/null || true)
+            if [[ -z "$left" && -z "$records" ]]; then
+              echo "no kind clusters or ownership records left"; exit 0
+            fi
             sleep 2
           done
           echo "kind clusters left behind:"; echo "$left"
+          echo "ownership records left behind:"; echo "$records"
           systemctl --user list-units 'rules-kind-reaper-*' --all --no-pager || true
+          tail -n 50 "$state"/*.log || true
           exit 1
 
       - name: Upload test logs on failure

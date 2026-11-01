@@ -28,10 +28,10 @@ env_file="${TEST_TMPDIR}/test_cluster.env"
 rm -f "$env_file"
 "$cluster_launcher" &
 pid=$!
-deadline=$(( $(date +%s) + 180 ))
+deadline=$(( $(date +%s) + 600 ))
 while [[ ! -f "$env_file" ]]; do
     if [[ $(date +%s) -gt $deadline ]]; then
-        echo "FAIL: env file not written within 180 seconds" >&2
+        echo "FAIL: env file not written within 600 seconds" >&2
         exit 1
     fi
     kill -0 "$pid" 2>/dev/null || { echo "FAIL: launcher exited early" >&2; exit 1; }
