@@ -69,7 +69,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.3.0")
+bazel_dep(name = "rules_kind", version = "0.3.1")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -565,7 +565,17 @@ pruned after 7 days.
   deaths while the test is still running: a cluster whose launcher is
   killed as the test ends (the usual `rules_itest` case) can be left
   behind. On CI, `sudo loginctl enable-linger "$USER"` starts the user
-  instance. Before v0.2.1 the reaper was always a child process and was
+  instance.
+
+  A user service gets the groups the user had when `systemd --user`
+  started. If you joined `docker` after that, your tests can reach Docker
+  but such a service can't. The launcher checks this before starting the
+  reaper. If you're in the socket's group, it runs the reaper through
+  `sg docker`, which needs no password or re-login. Otherwise it falls back
+  to the child process and logs why. A reaper whose `kind delete` is refused
+  says "the reaper cannot reach the container runtime: permission denied …",
+  and gives up after 3 tries so the next test run's sweep deletes the
+  cluster (v0.3.1). Before v0.2.1 the reaper was always a child process and was
   killed with the test, leaving such clusters stuck in "Stopping".
 
 To keep the cluster for debugging, set `RULES_KIND_KEEP_CLUSTER=1`:

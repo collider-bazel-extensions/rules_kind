@@ -51,7 +51,8 @@ trap 'kill "$launcher_pid" 2>/dev/null; wait "$launcher_pid" 2>/dev/null || true
 
 # Wait for the cluster to be ready and the manifest applied.
 echo "waiting for cluster…"
-deadline=$(( $(date +%s) + 120 ))
+# Up to 600 s: includes waiting for a cluster slot (RULES_KIND_MAX_CLUSTERS).
+deadline=$(( $(date +%s) + 600 ))
 while [[ ! -f "$env_file" ]]; do
     [[ $(date +%s) -le $deadline ]] || { echo "FAIL: cluster startup timeout" >&2; exit 1; }
     kill -0 "$launcher_pid" 2>/dev/null || { echo "FAIL: launcher exited" >&2; exit 1; }

@@ -37,6 +37,7 @@ rules_kind/
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
     ├── launcher_unit_test.sh        # No runtime: cluster slots, RULES_KIND_SLOT_DIR, _log on a closed stdout
+    ├── reaper_access_test.sh        # No runtime (fakes): reaper unit's runtime access probe, sg, fallback, permission errors
     ├── cluster_cleanup_test.sh      # SIGKILL / orphaning / keep / SIGKILL mid-delete / --sweep; records removed
     ├── reaper_outlives_test.sh      # SIGKILLs the launcher and exits; CI checks the cluster is gone
     ├── k8s_version_test.sh          # Per-minor (1.35/1.36/1.37): server gitVersion + kubectl minor
@@ -159,13 +160,23 @@ rules_itest does not signal services when the test fails (`svcinit` calls
   rules-kind-reaper-<cluster>`, `launcher.py --reap-pid <kind> <name> <pid>
   <starttime> <log>`) that polls the launcher's pid and deletes the cluster
   once it is gone; the launcher stops the unit after a finished teardown.
-- Fallback when `systemd-run --user` fails: `launcher.py --reap <kind>
-  <name>`, `start_new_session=True`, holding a pipe from the launcher. EOF
-  without `done` → it deletes the cluster. Only covers deaths while the test
-  is still running.
+- The unit gets the user manager's groups, not the test's (#17). Before
+  starting it, the launcher probes a unit (`systemd-run --user --wait --pipe`
+  running `<runtime> info`). If that fails and the test is in the runtime
+  socket's group, the reaper unit runs under `sg <group> -c` (setuid
+  newgrp: no password, no re-login), after a second probe through `sg`.
+  If the probe can't run at all, the unit is used as before.
+- Fallback when `systemd-run --user` fails, or a unit can't reach the
+  runtime even through `sg`: `launcher.py --reap <kind> <name>`,
+  `start_new_session=True`, holding a pipe from the launcher. EOF without
+  `done` → it deletes the cluster. Only covers deaths while the test is
+  still running; the log says so.
 - A delete counts only when `kind get clusters` no longer lists it and no
   container has its `io.x-k8s.kind.cluster` label. Only then is the reaper
-  released; the reaper retries with backoff for 30 min (#14).
+  released; the reaper retries with backoff for 30 min (#14). "Permission
+  denied" is logged as "the reaper cannot reach the container runtime" and
+  given up after 3 tries, so the next sweep (with the test's groups) takes
+  over (#17).
 - Ownership record `~/.local/state/rules_kind/<cluster>.json`
   (`$XDG_STATE_HOME`); every launcher first deletes recorded clusters whose
   launcher and reaper are gone (`launcher.py --sweep <kind>` by hand).
@@ -334,15 +345,16 @@ linux-sandbox so the Docker socket is accessible.
 
 All tests must pass before any commit with code changes.
 
-### Test results (last full run: 2026-11-01, CI: Docker + rootless podman)
+### Test results (last full run: 2026-11-05, CI: Docker + rootless podman)
 
-All 12 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 13 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
 | `//tests:checksums_test`           | every `_KIND_VERSIONS` entry has a 64-hex SHA-256 (no network, no runtime)        | PASSED |
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
+| `//tests:reaper_access_test`       | reaper unit probed for runtime access (fakes): used as is / under `sg <group>` / child-process fallback with a warning / probe unavailable; "permission denied" named and given up after 3 (no runtime) | PASSED |
 | `//tests:launcher_unit_test`       | slot limit waits and names the holder, SIGKILL frees the slot, `0` = no limit, `RULES_KIND_SLOT_DIR`; `_log` on a closed stdout (no runtime) | PASSED |
 | `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL, after parent exit, after SIGKILL mid-delete, and by `--sweep` once launcher and reaper are gone; records removed; keep switch; reaper is a systemd user unit | PASSED |
 | `//tests:reaper_outlives_test`     | launcher SIGKILLed, test exits at once; cluster deleted afterwards (checked after `bazel test` returns) | PASSED |

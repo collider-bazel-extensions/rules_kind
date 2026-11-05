@@ -304,8 +304,45 @@ the record stays for the next launcher's sweep. After a confirmed teardown
 the launcher runs `systemctl --user stop --no-block` on the unit, so the
 usual case doesn't run a second delete.
 
+**The unit's access to the runtime (v0.3.1, #17).** A user service runs
+with the *user manager's* credentials, not the test's. Supplementary groups
+are fixed when `systemd --user` starts, so a user who joined `docker` later
+has the group in their shells and tests but not in their units, until they
+log out completely. The test then creates clusters fine, but every reaper
+`kind delete` fails with "permission denied" on `/var/run/docker.sock`, and
+killed tests leak clusters. So before relying on a unit the launcher probes
+one: `systemd-run --user --wait --pipe -- sh -c '<runtime> info …; echo
+<status>'`, with the same `--setenv` environment. Then:
+- **It reaches the runtime:** the reaper unit is used as is.
+- **It doesn't, and this process is in the socket's group** (`DOCKER_HOST`'s
+  unix socket, else `/var/run/docker.sock`): the reaper unit runs through
+  `sg <group> -c '<reaper command>'`, once a second probe through `sg`
+  succeeds. `sg` is setuid `newgrp`. It grants a group the group database
+  lists the user in, with no password and no re-login, so the reaper keeps
+  its systemd parent and still outlives the test. The environment passes
+  through `sg` unchanged.
+- **It still can't:** the child-process reaper below, with a warning that a
+  killed test may leave its cluster until the next launcher's sweep. If the
+  test is in the group, the warning says to log out and back in (or restart
+  `user@<uid>.service`).
+- **The probe itself can't run** (e.g. a systemd-run without `--pipe`; the
+  status line is missing): the unit is used as before, with a note.
+
+Rootless podman's socket belongs to the user, so podman setups always take
+the first branch.
+
+A delete refused with "permission denied" is now logged as "the reaper cannot
+reach the container runtime: permission denied on <socket> (group …; this
+process has groups …)", not as "still present after kind delete". After 3
+such refusals in a row the reaper gives up: credentials don't change under a
+running process, and while the reaper lives, the next launcher's sweep
+(which runs with the test's groups) skips the cluster. Before v0.3.1 it
+retried for the full 30 minutes. `reaper_access_test` covers all of this
+with fake `systemd-run`, `docker`, `sg` and `kind` binaries.
+
 **Child process (fallback).** If `systemd-run --user` fails (no user
-manager, no D-Bus), the launcher starts `launcher.py --reap <kind> <name>`
+manager, no D-Bus), or a unit can't reach the runtime even through `sg`
+(above), the launcher starts `launcher.py --reap <kind> <name>`
 with `start_new_session=True`, so signals sent to the launcher's process
 group don't reach it. The reaper blocks reading its stdin, a pipe whose write
 end only the launcher holds. After deleting the cluster the launcher writes
