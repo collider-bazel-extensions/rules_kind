@@ -46,10 +46,12 @@ Container runtime:
 import atexit
 import dataclasses
 import fcntl
+import grp
 import json
 import os
 import pwd
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -438,23 +440,122 @@ def _reaper_unit_name(cluster_name):
     return f"rules-kind-reaper-{cluster_name}"
 
 
+def _setenv_flags(env):
+    # A service starts with the user manager's environment, not ours; pass
+    # ours through (`-E NAME` copies NAME from systemd-run's environment).
+    # systemd rejects names that aren't shell identifiers (e.g. bash's
+    # exported `BASH_FUNC_f%%`).
+    return [f"--setenv={k}" for k in sorted(env) if _ENV_NAME.fullmatch(k)]
+
+
+def _runtime_socket(env):
+    """(path, gid) of the Docker daemon's unix socket, or (None, None). A
+    rootless podman socket belongs to the user, so it can't hit #17."""
+    if _runtime_cli(env) != "docker":
+        return None, None
+    host = env.get("DOCKER_HOST", "")
+    if host and not host.startswith("unix://"):
+        return None, None
+    path = host[len("unix://"):] if host else "/var/run/docker.sock"
+    try:
+        return path, os.stat(path).st_gid
+    except OSError:
+        return path, None
+
+
+_PROBE_MARK = "rules-kind-probe-status:"
+
+
+def _unit_reaches_runtime(env, prefix=()):
+    """Whether a systemd user unit, started like the reaper (optionally
+    through `prefix`, e.g. `sg docker -c`), can talk to the container
+    runtime. The unit gets the user manager's credentials, not ours (#17).
+
+    Returns (True|False|None, detail). None: the probe itself couldn't run
+    (e.g. a systemd without --pipe), so nothing is known."""
+    # The status line tells "the runtime refused" from "the probe didn't run".
+    probe = (f'out=$({_runtime_cli(env)} info 2>&1 >/dev/null); s=$?; '
+             f'printf "%s\\n" "$out" >&2; echo {_PROBE_MARK}$s')
+    inner = ["sh", "-c", probe]
+    if prefix:
+        inner = list(prefix) + [shlex.join(inner)]
+    cmd = (["systemd-run", "--user", "--wait", "--pipe", "--quiet", "--collect"]
+           + _setenv_flags(env) + ["--"] + inner)
+    sd_env = _systemd_user_env()
+    sd_env.update(env)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, env=sd_env,
+                           stdin=subprocess.DEVNULL,
+                           timeout=_RUNTIME_PROBE_TIMEOUT_S + 30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, str(e)
+    m = re.search(_PROBE_MARK + r"(\d+)", r.stdout)
+    detail = " ".join((r.stderr or "").split())[:300]
+    if not m:
+        return None, detail or f"systemd-run exited {r.returncode}"
+    return m.group(1) == "0", detail
+
+
+def _reaper_prefix(env):
+    """How to start the reaper unit so it reaches the runtime: [] (as is),
+    ["sg", <group>, "-c"], or None (it can't: use a child process)."""
+    ok, detail = _unit_reaches_runtime(env)
+    if ok or ok is None:
+        if ok is None:
+            _log(f"reaper: couldn't probe the user unit's runtime access ({detail}); "
+                 "assuming it has it")
+        return []
+    path, gid = _runtime_socket(env)
+    group = None
+    if gid is not None and (gid in os.getgroups() or gid == os.getegid()):
+        try:
+            group = grp.getgrgid(gid).gr_name
+        except KeyError:
+            group = None
+    if group and shutil.which("sg"):
+        # The user is in the socket's group but the user manager, started
+        # before they joined, isn't. sg (setuid newgrp) grants a group the
+        # group database lists them in, with no password and no re-login.
+        prefix = ["sg", group, "-c"]
+        ok2, detail2 = _unit_reaches_runtime(env, prefix)
+        if ok2:
+            _log(f"reaper: the systemd user manager isn't in group {group} ({path}'s "
+                 f"group; it started before you joined it), so the reaper unit runs "
+                 f"under `sg {group}`")
+            return prefix
+        detail = f"{detail}; through `sg {group}`: {detail2}"
+    if group:
+        advice = (f" Log out and back in (or restart user@{os.getuid()}.service) so "
+                  f"the user manager picks up group {group}.")
+    elif gid is not None:
+        advice = (f" This process isn't in {path}'s group (gid {gid}) either; "
+                  "the runtime may be reachable some other way.")
+    else:
+        advice = ""
+    _log("reaper: a systemd user unit can't reach the container runtime "
+         f"({detail}); using a child process instead. A test that is killed can "
+         "then leave its cluster until the next launcher's sweep." + advice)
+    return None
+
+
 def _start_reaper_unit(kind_bin, cluster_name, env, log_path):
     """Start the reaper as a transient systemd user service. systemd, not
     the test, is its parent, so Bazel can't kill it when the test exits.
-    Returns the unit name, or None if no user manager is reachable."""
+    Returns the unit name, or None if no user manager is reachable or a
+    unit couldn't reach the container runtime (#17)."""
     if not shutil.which("systemd-run") or not os.path.exists("/proc/self/stat"):
+        return None
+    prefix = _reaper_prefix(env)
+    if prefix is None:
         return None
     unit = _reaper_unit_name(cluster_name)
     pid = os.getpid()
     cmd = ["systemd-run", "--user", "--quiet", "--collect", "--unit", unit,
            "--property=Delegate=yes"]
-    # A service starts with the user manager's environment, not ours; pass
-    # ours through (`-E NAME` copies NAME from systemd-run's environment).
-    # systemd rejects names that aren't shell identifiers (e.g. bash's
-    # exported `BASH_FUNC_f%%`).
-    cmd += [f"--setenv={k}" for k in sorted(env) if _ENV_NAME.fullmatch(k)]
-    cmd += ["--", sys.executable, os.path.abspath(__file__), "--reap-pid",
+    cmd += _setenv_flags(env)
+    reap = [sys.executable, os.path.abspath(__file__), "--reap-pid",
             kind_bin, cluster_name, str(pid), _proc_start_time(pid), log_path]
+    cmd += ["--"] + (list(prefix) + [shlex.join(reap)] if prefix else reap)
     sd_env = _systemd_user_env()
     sd_env.update(env)
     try:
@@ -575,27 +676,69 @@ def _cluster_gone(kind_bin, cluster_name, env):
         return False
 
 
-def _delete_cluster(kind_bin, cluster_name, env):
-    """One `kind delete`, then check. Returns True if the cluster is gone."""
+def _denied(text):
+    return "permission denied" in text.lower()
+
+
+def _delete_attempt(kind_bin, cluster_name, env):
+    """One `kind delete`, then check: "gone", "present" or "denied" (this
+    process can't reach the container runtime)."""
     _log(f"deleting cluster {cluster_name}…")
+    failure = ""
     try:
         _run([kind_bin, "delete", "cluster", "--name", cluster_name], env=env,
              timeout=_DELETE_TIMEOUT_S)
     except Exception as e:
-        _log(f"warning: kind delete failed: {e}")
+        failure = str(e)
+        if not _denied(failure):
+            _log(f"warning: kind delete failed: {e}")
     if _cluster_gone(kind_bin, cluster_name, env):
         _log("cluster deleted")
         _forget_cluster(cluster_name)
-        return True
+        return "gone"
+    if _denied(failure):
+        path, gid = _runtime_socket(env)
+        try:
+            group = grp.getgrgid(gid).gr_name if gid is not None else None
+        except KeyError:
+            group = None
+        mine = " ".join(str(g) for g in os.getgroups())
+        _log("error: the reaper cannot reach the container runtime: permission denied"
+             + (f" on {path}" if path else "")
+             + (f" (group {group}; this process has groups {mine})" if group else "")
+             + f". {cluster_name} was not deleted.")
+        return "denied"
     _log(f"warning: cluster {cluster_name} is still present after kind delete")
-    return False
+    return "present"
+
+
+def _delete_cluster(kind_bin, cluster_name, env):
+    """One `kind delete`, then check. Returns True if the cluster is gone."""
+    return _delete_attempt(kind_bin, cluster_name, env) == "gone"
+
+
+# Retrying "permission denied" for half an hour helps no one: credentials
+# don't change under a running process, and while the reaper lives the
+# next launcher's sweep (which runs with the test's groups) skips the
+# cluster.
+_DENIED_ATTEMPTS = 3
 
 
 def _delete_until_gone(kind_bin, cluster_name, env, deadline_s=_REAPER_DEADLINE_S):
     """Retry _delete_cluster with backoff (5 s doubling to 60 s)."""
     end = time.monotonic() + deadline_s
     delay = 5
-    while not _delete_cluster(kind_bin, cluster_name, env):
+    denied = 0
+    while True:
+        outcome = _delete_attempt(kind_bin, cluster_name, env)
+        if outcome == "gone":
+            break
+        denied = denied + 1 if outcome == "denied" else 0
+        if denied >= _DENIED_ATTEMPTS:
+            _log(f"giving up on {cluster_name} after {denied} permission errors; "
+                 "the next launcher's sweep, which runs with the test's groups, "
+                 "deletes it")
+            return False
         if time.monotonic() + delay > end:
             _log(f"giving up on {cluster_name} after {deadline_s} s; the next "
                  "launcher's sweep retries it")

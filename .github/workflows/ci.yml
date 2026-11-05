@@ -70,6 +70,7 @@ jobs:
             //tests:checksums_test \
             //tests:kind_health_check_test \
             //tests:launcher_unit_test \
+            //tests:reaper_access_test \
             //tests:kind_server_test \
             //tests:cluster_cleanup_test \
             //tests:reaper_outlives_test \

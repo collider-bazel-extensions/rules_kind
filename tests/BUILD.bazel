@@ -69,6 +69,18 @@ sh_test(
 )
 
 # ---------------------------------------------------------------------------
+# reaper_access_test — no Docker required (fake systemd-run / docker / sg / kind)
+# Tests: the reaper unit's runtime access is probed; sg or a child process
+# when the user manager lacks the socket's group; permission errors (#17).
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name = "reaper_access_test",
+    srcs = ["reaper_access_test.sh"],
+    data = ["//private:launcher.py"],
+)
+
+# ---------------------------------------------------------------------------
 # kind_server_test — requires Docker
 # Tests: kind_cluster starts, writes env file, env vars present, SIGTERM shuts down.
 # ---------------------------------------------------------------------------
