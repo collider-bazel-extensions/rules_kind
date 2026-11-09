@@ -45,7 +45,13 @@ rules_kind/
 tools/
 ├── fetch_busybox.sh          # Regenerate tests/testdata/busybox.tar
 └── update_checksums.sh       # Re-pin _KIND_VERSIONS SHA-256s from published sums
+.gitattributes                # tests/ export-ignore: kept out of the release archive
+.github/consumer/check.sh     # CI: the git archive has no tests/; @rules_kind//... loads for a consumer
 ```
+
+`tests/` loads the dev-only `rules_shell`, so it is `export-ignore`d and the
+tag tarball leaves it out (`@rules_kind//...` loads for consumers). Nothing
+outside `tests/` may reference it. A `git_override` clone still contains it.
 
 ## Key concepts
 

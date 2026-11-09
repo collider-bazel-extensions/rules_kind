@@ -69,7 +69,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.3.1")
+bazel_dep(name = "rules_kind", version = "0.3.2")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -87,6 +87,8 @@ use_repo(kind,
     "kind_1_35_darwin_amd64",
 )
 ```
+
+The release archive (the tag tarball) leaves out `tests/`, whose packages load dev-only modules, so `bazel query @rules_kind//...` works for consumers. A `git_override` clone still contains them; name packages instead (for example `@rules_kind//:all`).
 
 Supported `k8s_version` values:
 
