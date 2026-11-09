@@ -112,3 +112,19 @@ jobs:
           name: bazel-testlogs-${{ matrix.runtime }}
           path: bazel-testlogs/
           if-no-files-found: ignore
+
+  consumer:
+    # rules_kind as a dependency, from the commit's release archive (git archive
+    # honours .gitattributes export-ignore, as tag tarballs do): tests/ not
+    # shipped, and @rules_kind//... loads.
+    name: consumer (ubuntu-latest, git archive)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Consumer check
+        run: .github/consumer/check.sh "$RUNNER_TEMP/consumer"

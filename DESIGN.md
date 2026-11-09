@@ -568,6 +568,10 @@ Failures surface as `bazel build` errors, not as runtime failures.
 
 ---
 
+## Release archive contents (v0.3.2)
+
+`tests/` is `export-ignore` (`.gitattributes`): its packages load dev-only modules (rules_shell), which made `@rules_kind//...` unloadable for consumers. `REPO.bazel` `ignore_directories` would also hide them from this repo's own `bazel test`, so it isn't used. A `git_override` clone still contains them. CI's `consumer` job (`.github/consumer/check.sh`) checks the commit's `git archive`: the directories are absent and `@rules_kind//...` loads for a consumer.
+
 ## Known limitations and non-goals
 
 - **Docker or podman required.** Tests must run with `tags = ["no-sandbox"]`
