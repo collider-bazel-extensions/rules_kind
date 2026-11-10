@@ -36,7 +36,7 @@ rules_kind/
     ├── manifest_test.sh             # Manifest applied before env file written
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
-    ├── launcher_unit_test.sh        # No runtime: cluster slots, RULES_KIND_SLOT_DIR, _log on a closed stdout
+    ├── launcher_unit_test.sh        # No runtime: cluster slots, RULES_KIND_SLOT_DIR, _log on a closed stdout, podman network race retry
     ├── reaper_access_test.sh        # No runtime (fakes): reaper unit's runtime access probe, sg, fallback, permission errors
     ├── cluster_cleanup_test.sh      # SIGKILL / orphaning / keep / SIGKILL mid-delete / --sweep; records removed
     ├── reaper_outlives_test.sh      # SIGKILLs the launcher and exits; CI checks the cluster is gone
@@ -361,7 +361,7 @@ All 13 tests pass. The 9 cluster tests use podman (rootless Docker alternative) 
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
 | `//tests:reaper_access_test`       | reaper unit probed for runtime access (fakes): used as is / under `sg <group>` / child-process fallback with a warning / probe unavailable; "permission denied" named and given up after 3 (no runtime) | PASSED |
-| `//tests:launcher_unit_test`       | slot limit waits and names the holder, SIGKILL frees the slot, `0` = no limit, `RULES_KIND_SLOT_DIR`; `_log` on a closed stdout (no runtime) | PASSED |
+| `//tests:launcher_unit_test`       | slot limit waits and names the holder, SIGKILL frees the slot, `0` = no limit, `RULES_KIND_SLOT_DIR`; `_log` on a closed stdout; podman `kind` network race retried, other failures not (no runtime) | PASSED |
 | `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL, after parent exit, after SIGKILL mid-delete, and by `--sweep` once launcher and reaper are gone; records removed; keep switch; reaper is a systemd user unit | PASSED |
 | `//tests:reaper_outlives_test`     | launcher SIGKILLed, test exits at once; cluster deleted afterwards (checked after `bazel test` returns) | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
