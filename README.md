@@ -21,6 +21,9 @@ bazel test //myapp/...   # kind cluster shared across all services in each servi
 - Blocks until SIGTERM, then runs `kind delete cluster`.
 - Deletes the cluster even when the test fails or the launcher is killed
   (see [Cluster cleanup](#cluster-cleanup)).
+- Checks a cluster against the CIS Kubernetes Benchmark with kube-bench
+  (`kube_bench_test`, v0.4.0+; see
+  [`kube_bench_test`](#kube_bench_test-cis-kubernetes-benchmark)).
 
 ## What you can test
 
@@ -71,7 +74,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.3.3")
+bazel_dep(name = "rules_kind", version = "0.4.0")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -454,6 +457,8 @@ echo "PASS"
 load("@rules_kind//:defs.bzl",
     "kind_cluster",
     "kind_health_check",
+    "kube_bench_test",   # v0.4.0+; see below
+    "KindClusterInfo",   # provider: name, k8s_version, node_image, images, launcher
 )
 
 # Long-running kind cluster for rules_itest multi-service tests.
@@ -473,6 +478,14 @@ kind_cluster(
 kind_health_check(
     name    = "k8s_health",
     cluster = ":k8s",
+)
+
+# CIS Kubernetes Benchmark (kube-bench) on every node of a kind_cluster whose
+# images include "@rules_kind//:kube_bench_image".
+kube_bench_test(
+    name    = "cis_benchmark_test",
+    cluster = ":k8s",
+    ignore  = "kube_bench_ignore.yaml",
 )
 ```
 
@@ -640,6 +653,221 @@ bazel test //... --test_env=RULES_KIND_MAX_CLUSTERS=4
 
 ---
 
+## `kube_bench_test`: CIS Kubernetes Benchmark
+
+`kube_bench_test` (v0.4.0+) runs [kube-bench](https://github.com/aquasecurity/kube-bench)
+on every node of a `kind_cluster` and fails on any FAIL result whose check
+isn't listed in an ignore file. Each ignore entry names the check and says
+why it's accepted, so the checks a kind cluster can't pass are explicit and
+reviewed rather than silently skipped.
+
+```python
+load("@rules_kind//:defs.bzl", "kind_cluster", "kube_bench_test")
+
+kind_cluster(
+    name   = "k8s",
+    images = ["@rules_kind//:kube_bench_image"],   # required: the Job can't pull
+    tags   = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kube_bench_test(
+    name    = "cis_benchmark_test",
+    cluster = ":k8s",
+    ignore  = "kube_bench_ignore.yaml",
+)
+```
+
+```sh
+bazel test //:cis_benchmark_test
+```
+
+On its own, the test starts the cluster, runs kube-bench, and deletes the
+cluster (about 90 s for a 2-node cluster). As the `test` of a rules_itest
+`service_test` whose services include the cluster, it uses that cluster
+instead: the cluster's env file already exists when the test starts.
+
+```python
+kind_health_check(name = "k8s_health", cluster = ":k8s")
+itest_service(name = "k8s_svc", exe = ":k8s", health_check = ":k8s_health")
+
+kube_bench_test(name = "cis_bin", cluster = ":k8s", ignore = "kube_bench_ignore.yaml", tags = ["manual"])
+
+service_test(
+    name     = "cis_benchmark_test",
+    test     = ":cis_bin",
+    services = [":k8s_svc"],     # plus your app's services, to check the cluster they run in
+    tags     = ["no-sandbox", "requires-docker"],
+)
+```
+
+Under a `service_test` whose services don't include `cluster`, the test fails
+with a message saying so rather than starting a second cluster.
+
+### What it runs
+
+- One Job per node, pinned to it with `nodeName` and tolerating every taint,
+  with `hostPID: true` and the node's files mounted read-only:
+  `/etc/kubernetes`, `/var/lib/kubelet`, `/etc/systemd`, `/lib/systemd`,
+  `/usr/bin`, `/etc/cni/net.d`, `/opt/cni/bin`, and `/var/lib/etcd` on
+  control-plane nodes. On kind, the "host" is the node container. The paths
+  are `type: Directory`, so nothing is created on a node. The Job runs in its
+  own namespace (`rules-kind-kube-bench-<hex>`, labelled Pod Security
+  `privileged`), which is deleted afterwards. It gets no service account
+  token.
+- Control-plane nodes run `targets` (default: `master`, `controlplane`,
+  `etcd`, `node`, `policies`; `policies` only on the first, since it is
+  cluster-wide). Worker nodes run `node` if it's in `targets`.
+- The image is `docker.io/aquasec/kube-bench:v0.16.0`, pinned by its
+  multi-arch index digest (linux/amd64 and linux/arm64), loaded into the
+  nodes by `kind_cluster(images = [...])`, and run with
+  `imagePullPolicy: Never`. If it isn't loaded the build fails (analysis
+  error naming the fix), and a Job stuck on `ErrImageNeverPull` fails the
+  test with the same message.
+
+### Results
+
+- **FAIL** not in the ignore file: the test fails. The summary lists each
+  with its id, text, nodes and kube-bench's remediation.
+- **FAIL** in the ignore file: listed with the entry's reason.
+- **WARN**: listed (id and text), never failing. kube-bench reports WARN for
+  checks it can't decide automatically: CIS "Manual" checks and unscored ones
+  (all of section 5, `policies`, and `controlplane`). Failing on them would
+  fail every cluster.
+- **Stale ignore entries** (the check passed, warned, or wasn't reported on
+  any node): listed with what each node reported. Set `fail_on_stale = True`
+  to fail on them.
+- **Expired ignore entries**: the test fails, naming each.
+- Each node's raw `kube-bench --json` output goes to the test's undeclared
+  outputs, with the summary:
+  `bazel-testlogs/<pkg>/<name>/test.outputs/kube-bench/<node>.json` and
+  `summary.txt`.
+
+```
+kube-bench 0.16.0 -- benchmark cis-1.12 (auto for k8s 1.35) -- //app:cis_benchmark_test
+  kind-…-control-plane (control plane): master, controlplane, etcd, node, policies
+  kind-…-worker (worker): node
+Results: 80 PASS, 14 FAIL (13 ignored), 62 WARN, 0 INFO
+
+FAIL, not in app/kube_bench_ignore.yaml (1):
+  1.2.15 Ensure that the --profiling argument is set to false (Automated)
+    nodes: kind-…-control-plane
+    remediation:
+      Edit the API server pod specification file /etc/kubernetes/manifests/kube-apiserver.yaml
+      on the control plane node and set the below parameter.
+      --profiling=false
+
+Ignored FAIL (11):
+  1.1.12 Ensure that the etcd data directory ownership is set to etcd:etcd (Automated)
+    nodes: kind-…-control-plane
+    reason: kubeadm runs etcd as root in a static pod …
+…
+FAIL: 1 failing check(s) not in app/kube_bench_ignore.yaml: 1.2.15
+```
+
+### The ignore file
+
+```yaml
+checks:
+  - id: "1.2.15"                  # kube-bench's check id (test_number)
+    reason: kube-apiserver keeps the upstream default --profiling=true
+  - id: "4.1.1"
+    reason: kind's node image ships 10-kubeadm.conf with mode 644
+    expires: 2027-06-30           # optional, YYYY-MM-DD
+```
+
+- **Entries:** `checks:` holds the list. Every entry needs `id` (a check id
+  such as `1.2.15` or `2.1`) and a non-empty `reason`. `expires` is optional.
+  An id may appear once. An entry applies to its check on every node.
+- **Expiry.** An entry expires at the start of its `expires` day (UTC), as in
+  rules_trivy. An expired entry fails the test, naming it, whether or not
+  its check still fails.
+- **Malformed files fail the build.** A validation action checks the file's
+  shape (not expiry: the date isn't a build input), listing every problem:
+
+  ```
+  kube-bench ignore file app/kube_bench_ignore.yaml is malformed:
+    checks[3] (1.2.15): unknown key 'statement' -- the reason goes in 'reason' (known: id, reason, expires)
+    checks[3] (1.2.15): id 1.2.15 is already listed at checks[1]
+    checks[3] (1.2.15): 'reason' is missing or empty (why this FAIL is accepted)
+  ```
+
+- **The YAML subset** is rules_trivy's: block mappings and lists, `[a, b]`
+  lists, plain or quoted strings and comments. Anchors, tags, multi-line
+  (`|`, `>`) strings and `{...}` mappings are rejected by line number. Every
+  value is a string, so `id: 1.2` is `"1.2"`.
+- **Caching.** Bazel caches a passing test until its inputs change, and the
+  date isn't an input, so a cached pass doesn't notice an entry expiring.
+  Run with `--nocache_test_results` on a schedule for a hard guarantee.
+- To try an ignore file against saved output without a cluster:
+  `python3 private/kube_bench.py --evaluate kube_bench_ignore.yaml node1.json [node2.json …]`.
+
+### What a stock kind cluster fails
+
+kind v0.33.0 (k8s 1.35 and 1.37), kube-bench v0.16.0, cis-1.12, found under
+rootless podman; CI runs the same tests, with the same ignore file, under
+docker too. All are kubeadm or Kubernetes defaults that kind keeps:
+
+| Check | Nodes | Why kind fails it |
+|---|---|---|
+| 1.1.12 etcd data directory owned by etcd:etcd | control plane | etcd runs as root (static pod); the node image has no etcd user |
+| 1.2.5 `--kubelet-certificate-authority` | control plane | kubelets serve self-signed certificates (no `serverTLSBootstrap`) |
+| 1.2.15 / 1.3.2 / 1.4.1 `--profiling=false` | control plane | apiserver, controller-manager and scheduler keep the default `true` |
+| 1.2.16–1.2.19 audit log path, maxage, maxbackup, maxsize | control plane | no audit log configured |
+| 1.2.30 `--service-account-extend-token-expiration=false` | control plane | upstream default `true` |
+| 4.1.1 kubelet service file mode 600 | all | `10-kubeadm.conf` ships as 644 |
+| 4.1.9 kubelet `config.yaml` mode 600 | all | kubeadm writes it as 644 |
+
+rules_kind's own ignore file for these, with reasons, is
+[`tests/kube_bench/kind_ignore.yaml`](tests/kube_bench/kind_ignore.yaml).
+Most can be fixed with kind config `kubeadmConfigPatches` if your tests
+need them to pass.
+
+### Benchmarks
+
+`benchmark = "auto"` (the default) picks it from the cluster's
+`k8s_version`:
+
+| `k8s_version` | benchmark |
+|---|---|
+| `1.29` | `cis-1.11` |
+| `1.32` | `cis-1.12` |
+| `1.35`, `1.36`, `1.37` | `cis-1.12` |
+
+CIS hasn't published a benchmark newer than v1.12 (Kubernetes 1.32–1.34) in
+kube-bench v0.16.0, so 1.35+ use cis-1.12, which is also what kube-bench's
+own auto-detection picks for them. Any generic CIS benchmark in the image
+can be set explicitly (`cis-1.5` … `cis-1.12`, `cis-1.20`, `cis-1.23`,
+`cis-1.24`). The distribution-specific ones (EKS, GKE, AKS, k3s, RKE,
+OpenShift, …) don't describe a kind cluster and are rejected at analysis
+time, as are unknown `targets`.
+
+### `kube_bench_test` attributes
+
+| Attribute | Default | Description |
+|---|---|---|
+| `cluster` | required | `kind_cluster` target. Its `images` must include `@rules_kind//:kube_bench_image`. |
+| `benchmark` | `"auto"` | `"auto"` or a generic CIS benchmark, e.g. `"cis-1.12"`. |
+| `targets` | `["master", "controlplane", "etcd", "node", "policies"]` | kube-bench targets for control-plane nodes; workers run `node` if listed. |
+| `ignore` | none | The ignore file (`.yaml` / `.yml`). Without one, any FAIL fails the test. |
+| `fail_on_stale` | `False` | Also fail on ignore entries whose check didn't FAIL. |
+| `job_timeout` | `300` | Seconds to wait for the kube-bench Jobs. |
+
+The macro adds the `no-sandbox` and `requires-docker` tags and defaults to
+`size = "large"`, `timeout = "long"`.
+
+### Under rootless podman
+
+Nothing differs. The kind node is a container in podman's user namespace;
+the Job's `hostPID` and host paths refer to that node container (not the
+machine), which holds the kubelet, the static pods and the files kube-bench
+reads. kube-bench finds the control-plane processes and the kubelet with
+`ps`, and inside the user namespace the files appear root-owned with the
+modes kubeadm gave them, so the process-flag, ownership and permission
+checks see what they would on docker. Every check above fails for its
+kubeadm reason, not because of the runtime.
+
+---
+
 ## Binary acquisition
 
 Two modes are available:
@@ -670,6 +898,12 @@ Platforms supported: `linux_amd64`, `darwin_arm64`, `darwin_amd64`.
 # Health check test (no container runtime needed):
 bazel test //tests/...
 
+# kube_bench_test's unit and analysis tests (no runtime):
+bazel test //tests:kube_bench_unit_test //tests:kube_bench_analysis_test
+
+# kube_bench_test against real clusters (Docker or podman):
+bazel test //tests:kube_bench_test //tests:kube_bench_itest //tests:kube_bench_expect_fail_test
+
 # All tests including cluster tests (requires kind + Docker or podman).
 # For rootless podman, wrap in a delegated systemd scope:
 systemd-run --scope --user --property=Delegate=yes -- \
@@ -681,6 +915,13 @@ systemd-run --scope --user --property=Delegate=yes -- \
 ---
 
 ## Known limitations
+
+- **kube_bench_test:** Linux nodes on amd64 or arm64 (the pinned image's
+  platforms). No CIS benchmark newer than cis-1.12 exists in kube-bench
+  v0.16.0, so 1.35–1.37 clusters are checked against the 1.32–1.34
+  benchmark. A cached pass doesn't notice an ignore entry expiring (see
+  [The ignore file](#the-ignore-file)). The ignore file's shape is checked
+  by the build with the host's `python3`.
 
 - **Docker required.** Tests must run outside the Bazel linux-sandbox
   (`tags = ["no-sandbox"]` or `--strategy=TestRunner=local`).

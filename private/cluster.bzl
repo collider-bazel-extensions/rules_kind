@@ -2,6 +2,17 @@
 
 load(":binary.bzl", "KindBinaryInfo")
 
+KindClusterInfo = provider(
+    doc = "What a kind_cluster target starts. Read by kube_bench_test.",
+    fields = {
+        "name":        "string: target name; the env file is $TEST_TMPDIR/<name>.env",
+        "k8s_version": "string: Kubernetes minor version (e.g. '1.35')",
+        "node_image":  "string: digest-pinned kindest/node image",
+        "images":      "depset of File: image tarballs loaded into the nodes",
+        "launcher":    "File: the executable that starts the cluster",
+    },
+)
+
 # ---------------------------------------------------------------------------
 # JSON serialisation helpers
 # ---------------------------------------------------------------------------
@@ -129,10 +140,19 @@ exec python3 "$RUNFILES_ROOT/{workspace}/{launcher_short}" "$@"
     if ctx.files.images:
         rf = rf.merge(ctx.runfiles(files = ctx.files.images))
 
-    return [DefaultInfo(
-        executable = wrapper,
-        runfiles   = rf,
-    )]
+    return [
+        DefaultInfo(
+            executable = wrapper,
+            runfiles   = rf,
+        ),
+        KindClusterInfo(
+            name        = cluster_name,
+            k8s_version = ctx.attr.k8s_version,
+            node_image  = node_image,
+            images      = depset(ctx.files.images),
+            launcher    = wrapper,
+        ),
+    ]
 
 kind_cluster_rule = rule(
     doc = """\
@@ -143,6 +163,7 @@ kind/kubectl binary pair based on `k8s_version`.
 """,
     implementation = _kind_cluster_impl,
     executable = True,
+    provides = [KindClusterInfo],
     attrs = {
         "k8s_version": attr.string(
             doc     = "Kubernetes minor version. Selects the kindest/node image tag.",

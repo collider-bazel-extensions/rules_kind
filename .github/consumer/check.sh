@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Consumer check against the commit's release archive (git archive honours
 # .gitattributes export-ignore, as GitHub's tag tarballs do): the
-# export-ignore'd directories are not shipped, and @rules_kind//... loads for
-# a consumer.
+# export-ignore'd directories are not shipped, @rules_kind//... loads for a
+# consumer, and a consumer's kube_bench_test builds.
 # Usage: .github/consumer/check.sh <scratch dir>
 set -euo pipefail
 module="rules_kind"
@@ -29,7 +29,6 @@ for m in re.finditer(r'bazel_dep\(([^)]*)\)\s*\n\s*(git_override\([^)]*\))', s):
 print("\n".join(out))
 PY
 )"
-touch "$c/BUILD.bazel"
 if [[ -f "$repo/.bazelversion" ]]; then cp "$repo/.bazelversion" "$c/"; fi
 cat > "$c/MODULE.bazel" <<MOD
 module(name = "consumer")
@@ -37,6 +36,30 @@ bazel_dep(name = "$module")
 local_path_override(module_name = "$module", path = "$src")
 $overrides
 MOD
+# kube_bench_test with only rules_kind as a dependency (no rules_oci): the
+# digest-pinned kube-bench image is fetched and the ignore file is checked
+# by the build (validation action). Building runs no cluster.
+cat > "$c/BUILD.bazel" <<'BUILD'
+load("@rules_kind//:defs.bzl", "kind_cluster", "kube_bench_test")
+
+kind_cluster(
+    name = "k8s",
+    images = ["@rules_kind//:kube_bench_image"],
+    tags = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kube_bench_test(
+    name = "cis_test",
+    cluster = ":k8s",
+    ignore = "kube_bench_ignore.yaml",
+)
+BUILD
+cat > "$c/kube_bench_ignore.yaml" <<'YAML'
+checks:
+  - id: "1.2.15"
+    reason: consumer check
+YAML
 cd "$c"
 bazel query "@$module//..." >/dev/null
-echo "PASS: ${ignored[*]} not shipped; @$module//... loads"
+bazel build //:cis_test
+echo "PASS: ${ignored[*]} not shipped; @$module//... loads; kube_bench_test builds"

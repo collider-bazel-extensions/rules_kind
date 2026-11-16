@@ -5,6 +5,7 @@ Load all public symbols from this file:
     load("@rules_kind//:defs.bzl",
         "kind_cluster",
         "kind_health_check",
+        "kube_bench_test",
     )
 """
 
@@ -12,15 +13,21 @@ load("//private:binary.bzl",
     _KindBinaryInfo = "KindBinaryInfo",
 )
 load("//private:cluster.bzl",
+    _KindClusterInfo    = "KindClusterInfo",
     _kind_cluster_rule  = "kind_cluster_rule",
     _kind_health_check  = "kind_health_check",
 )
+load("//private:kube_bench.bzl",
+    _kube_bench_test = "kube_bench_test",
+)
 
-# Re-export provider.
-KindBinaryInfo = _KindBinaryInfo
+# Re-export providers.
+KindBinaryInfo  = _KindBinaryInfo
+KindClusterInfo = _KindClusterInfo
 
 # Re-export rules.
 kind_health_check = _kind_health_check
+kube_bench_test   = _kube_bench_test
 
 # Map k8s_version -> //:kind_<MMM> binary label. Keep in sync with
 # private/cluster.bzl::_KINDEST_NODE_VERSIONS and the kind_binary targets in

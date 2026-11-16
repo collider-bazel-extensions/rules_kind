@@ -8,6 +8,7 @@ load(":extensions.bzl",
     "kind_system_binary_repo",
     "kind_binary_repo",
 )
+load("//private:kube_bench_image.bzl", "kube_bench_image_repos")
 
 def kind_system_dependencies(versions, bin_dir = ""):
     """Declare kind + kubectl binary repos using host-installed binaries.
@@ -45,3 +46,12 @@ def kind_dependencies(versions):
                 version  = version,
                 platform = platform,
             )
+
+def kube_bench_dependencies():
+    """Declare the digest-pinned kube-bench image repos for kube_bench_test.
+
+    The Bzlmod extension declares them automatically; WORKSPACE users call
+    this once. Declares kube_bench_image_linux_amd64 and _linux_arm64
+    (fetched only when a build needs @rules_kind//:kube_bench_image).
+    """
+    kube_bench_image_repos()

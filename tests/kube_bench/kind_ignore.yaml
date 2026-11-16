@@ -1,0 +1,30 @@
+# CIS checks a stock kind cluster fails (kind v0.33.0, kube-bench v0.16.0,
+# benchmark cis-1.12). kind builds its nodes with kubeadm and keeps kubeadm's
+# and Kubernetes' defaults; these are those defaults, accepted because the
+# cluster is a throwaway test fixture on localhost. Each could be changed with
+# kind config kubeadmConfigPatches if a test needed it.
+checks:
+  - id: "1.1.12"
+    reason: kubeadm runs etcd as root in a static pod and kind's node image has no etcd user, so /var/lib/etcd is root:root
+  - id: "1.2.5"
+    reason: kubelets serve self-signed certificates (kubeadm's default, no serverTLSBootstrap), so there is no CA for --kubelet-certificate-authority
+  - id: "1.2.15"
+    reason: kube-apiserver keeps the upstream default --profiling=true; the API server listens on localhost only
+  - id: "1.2.16"
+    reason: kind configures no audit log (no --audit-log-path); a test cluster lives for one test
+  - id: "1.2.17"
+    reason: no audit log (see 1.2.16), so no --audit-log-maxage
+  - id: "1.2.18"
+    reason: no audit log (see 1.2.16), so no --audit-log-maxbackup
+  - id: "1.2.19"
+    reason: no audit log (see 1.2.16), so no --audit-log-maxsize
+  - id: "1.2.30"
+    reason: kube-apiserver keeps the upstream default --service-account-extend-token-expiration=true (kubeadm doesn't set it)
+  - id: "1.3.2"
+    reason: kube-controller-manager keeps the upstream default --profiling=true
+  - id: "1.4.1"
+    reason: kube-scheduler keeps the upstream default --profiling=true
+  - id: "4.1.1"
+    reason: kind's node image ships the kubelet drop-in /etc/systemd/system/kubelet.service.d/10-kubeadm.conf with mode 644
+  - id: "4.1.9"
+    reason: kubeadm writes /var/lib/kubelet/config.yaml with mode 644

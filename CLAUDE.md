@@ -20,14 +20,19 @@ rules_kind/
 ├── MODULE.bazel              # Bzlmod module definition
 ├── WORKSPACE                 # Legacy workspace (compatibility shim)
 ├── defs.bzl                  # Public API re-exports
-├── extensions.bzl            # Module extension: kind + kubectl binary repos
+├── extensions.bzl            # Module extension: kind + kubectl binary repos, kube-bench image repos
 ├── repositories.bzl          # Legacy WORKSPACE equivalents of extensions.bzl
-├── BUILD.bazel               # Platform config_settings + kind_binary targets
+├── BUILD.bazel               # Platform config_settings + kind_binary targets + :kube_bench_image
 ├── DESIGN.md                 # Architecture and design decisions
 ├── private/
 │   ├── binary.bzl            # kind_binary rule + KindBinaryInfo provider
-│   ├── cluster.bzl           # kind_cluster rule + kind_health_check rule
-│   └── launcher.py           # Launcher: kind create → load images → apply manifests → write env
+│   ├── cluster.bzl           # kind_cluster rule + kind_health_check rule + KindClusterInfo
+│   ├── launcher.py           # Launcher: kind create → load images → apply manifests → write env
+│   ├── kube_bench.bzl        # kube_bench_test macro/rule (analysis checks, validation action)
+│   ├── kube_bench.py         # kube_bench_test runner: Jobs, ignore file, evaluation, summary
+│   ├── kube_bench_image.bzl  # Repo rule: digest-pinned kube-bench image → docker-archive
+│   ├── kube_bench_versions.bzl # KUBE_BENCH pins, CIS benchmarks, auto-benchmark table
+│   └── docker_archive.py     # OCI blobs → deterministic docker-archive (repo rule helper)
 ├── toolchain/
 │   └── toolchain.bzl         # Toolchain type + register helpers
 └── tests/
@@ -41,10 +46,15 @@ rules_kind/
     ├── cluster_cleanup_test.sh      # SIGKILL / orphaning / keep / SIGKILL mid-delete / --sweep; records removed
     ├── reaper_outlives_test.sh      # SIGKILLs the launcher and exits; CI checks the cluster is gone
     ├── k8s_version_test.sh          # Per-minor (1.35/1.36/1.37): server gitVersion + kubectl minor
-    └── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
+    ├── checksums_test.sh            # Fails on an empty/malformed _KIND_VERSIONS SHA-256
+    ├── kube_bench_unit_test.{sh,py} # No runtime: ignore file, evaluation, summary, Job spec, cluster choice
+    ├── kube_bench_analysis_tests.bzl # Analysis tests: auto benchmark, targets, missing image, KindClusterInfo
+    ├── kube_bench_expect_fail_test.sh # One cluster; inner kube_bench_tests: pass/unlisted/expired/stale
+    └── kube_bench/                  # kind_ignore.yaml (kind's FAILs + reasons), 2-node config, sample JSON
 tools/
 ├── fetch_busybox.sh          # Regenerate tests/testdata/busybox.tar
-└── update_checksums.sh       # Re-pin _KIND_VERSIONS SHA-256s from published sums
+├── update_checksums.sh       # Re-pin _KIND_VERSIONS SHA-256s from published sums
+└── update_kube_bench.sh      # Print KUBE_BENCH pins for a kube-bench tag; list its CIS benchmarks
 .gitattributes                # tests/ export-ignore: kept out of the release archive
 .github/consumer/check.sh     # CI: the git archive has no tests/; @rules_kind//... loads for a consumer
 ```
@@ -229,6 +239,26 @@ Download source:
 
 Platforms supported: `linux_amd64`, `darwin_arm64`, `darwin_amd64`.
 
+### `kube_bench_test` (v0.4.0, #22)
+
+kube-bench (CIS Kubernetes Benchmark) on every node of a `kind_cluster`.
+See README "kube_bench_test" and DESIGN "kube_bench_test" for the decisions.
+
+- The cluster's `images` must include `@rules_kind//:kube_bench_image`
+  (analysis error otherwise). The image is fetched by a rules_kind repo
+  rule (not rules_oci), pinned by index digest in
+  `private/kube_bench_versions.bzl`; Jobs use `imagePullPolicy: Never`.
+- Cluster: if `$TEST_TMPDIR/<cluster>.env` exists (rules_itest service), it
+  is used; otherwise the test runs the cluster's launcher and SIGTERMs it at
+  the end. Under a service_test (`SVCCTL_PORT`) without the env file: error.
+- One Job per node (`nodeName`, `hostPID`, read-only `type: Directory` host
+  paths, no SA token) in a throwaway namespace; output framed in pod logs.
+- FAIL not in the ignore file, or an expired entry → test fails. WARN and
+  stale entries are listed (`fail_on_stale` makes stale fail).
+- Ignore file: `checks:` → `id`, `reason`, optional `expires`. Shape checked
+  at build time (validation action), expiry at test time.
+- Raw JSON per node + `summary.txt` in `test.outputs/kube-bench/`.
+
 ### `kind_cluster` readiness protocol
 
 `kind_cluster` writes `$TEST_TMPDIR/<name>.env` atomically (via temp file +
@@ -282,6 +312,8 @@ sandbox. Only the test execution step needs sandbox bypass.
 load("@rules_kind//:defs.bzl",
     "kind_cluster",
     "kind_health_check",
+    "kube_bench_test",
+    "KindClusterInfo",
 )
 
 # Long-running kind cluster for rules_itest multi-service tests.
@@ -301,6 +333,18 @@ kind_cluster(
 kind_health_check(
     name    = "k8s_health",
     cluster = ":k8s",
+)
+
+# kube-bench on every node; the cluster's images must include
+# "@rules_kind//:kube_bench_image".
+kube_bench_test(
+    name          = "cis_test",
+    cluster       = ":k8s",
+    benchmark     = "auto",                 # or e.g. "cis-1.12"
+    targets       = ["master", "controlplane", "etcd", "node", "policies"],
+    ignore        = "kube_bench_ignore.yaml",
+    fail_on_stale = False,
+    job_timeout   = 300,
 )
 ```
 
@@ -351,9 +395,9 @@ linux-sandbox so the Docker socket is accessible.
 
 All tests must pass before any commit with code changes.
 
-### Test results (last full run: 2026-11-05, CI: Docker + rootless podman)
+### Test results (last full run: 2026-11-16, local rootless podman, 14m49s with --local_test_jobs=2; CI: Docker + rootless podman)
 
-All 13 tests pass. The 9 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
+All 18 test targets pass (26 tests counting the 9 analysis tests in `kube_bench_analysis_test`). The 12 cluster tests use podman (rootless Docker alternative) when Docker is unavailable; they are tagged `manual`/`requires-docker` because they need a container runtime.
 
 | Test target                        | What it verifies                                                                  | Result |
 |------------------------------------|-----------------------------------------------------------------------------------|--------|
@@ -370,6 +414,11 @@ All 13 tests pass. The 9 cluster tests use podman (rootless Docker alternative) 
 | `//tests:k8s_1_35_version_test`  | 1.35 cluster: server `v1.35.8`, kubectl 1.35, nodes Ready (kind v0.33.0)          | PASSED |
 | `//tests:k8s_1_36_version_test`  | 1.36 cluster: server `v1.36.4`, kubectl 1.36, nodes Ready (kind v0.33.0)          | PASSED |
 | `//tests:k8s_1_37_version_test`  | 1.37 cluster: server `v1.37.0`, kubectl 1.37, nodes Ready (kind v0.33.0)          | PASSED |
+| `//tests:kube_bench_unit_test`   | ignore file (valid, every malformed case, expiry boundary), evaluation and summary on checked-in kube-bench JSON (control plane + worker), Job spec, node plan, cluster choice (no runtime) | PASSED |
+| `//tests:kube_bench_analysis_test` | 9 analysis tests: auto benchmark (1.29 → cis-1.11, 1.35 → cis-1.12), explicit benchmark/targets, validation action, missing image / bad benchmark / bad, duplicate or empty targets fail, `KindClusterInfo` | PASSED |
+| `//tests:kube_bench_test`        | standalone, 2-node 1.35 cluster: kube-bench on both nodes, kind's 14 FAILs all in `kind_ignore.yaml`, cluster deleted | PASSED |
+| `//tests:kube_bench_itest`       | `kube_bench_test` as a rules_itest `service_test`'s test on a 1.37 cluster service | PASSED |
+| `//tests:kube_bench_expect_fail_test` | one cluster, inner runs: pass with a stale entry listed; unlisted 1.2.15 fails; expired entry fails; `fail_on_stale` fails | PASSED |
 
 To run cluster tests (requires Docker or podman):
 

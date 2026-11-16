@@ -215,3 +215,19 @@ alias(
     actual     = ":kind_1_35",
     visibility = ["//visibility:public"],
 )
+
+# ---------------------------------------------------------------------------
+# kube-bench image for kube_bench_test: add it to the kind_cluster's images.
+# A docker-archive of the digest-pinned multi-arch image
+# (private/kube_bench_versions.bzl) for the target CPU, which is the kind
+# nodes' CPU.
+# ---------------------------------------------------------------------------
+
+alias(
+    name       = "kube_bench_image",
+    actual     = select({
+        "@platforms//cpu:aarch64": "@kube_bench_image_linux_arm64//:image.tar",
+        "//conditions:default":    "@kube_bench_image_linux_amd64//:image.tar",
+    }),
+    visibility = ["//visibility:public"],
+)

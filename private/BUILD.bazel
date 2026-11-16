@@ -1,1 +1,5 @@
-exports_files(["launcher.py"])
+exports_files([
+    "docker_archive.py",
+    "kube_bench.py",
+    "launcher.py",
+])
