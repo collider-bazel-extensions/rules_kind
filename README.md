@@ -696,3 +696,11 @@ systemd-run --scope --user --property=Delegate=yes -- \
   the downloaded binaries. Regenerate them with `tools/update_checksums.sh`
   (`--check` verifies without writing); `//tests:checksums_test` fails on an
   empty or malformed value.
+
+---
+
+## Requesting a new rules package
+
+Want Bazel rules for another tool or service?
+[Request a rules package](https://github.com/collider-bazel-extensions/.github/issues/new?template=request-a-rules-package.yml).
+The [organization page](https://github.com/collider-bazel-extensions) lists every package.
