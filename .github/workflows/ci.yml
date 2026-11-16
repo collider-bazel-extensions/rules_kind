@@ -60,7 +60,10 @@ jobs:
         # to opt in. `kind_health_check_test` and `checksums_test` are
         # untagged (no runtime needed) — included for parity across both
         # jobs. `checksums_test` fails on an empty or malformed SHA-256 in
-        # extensions.bzl's _KIND_VERSIONS table.
+        # extensions.bzl's _KIND_VERSIONS table. The kube_bench_* tests
+        # (#22): unit + analysis need no runtime; kube_bench_test (2 nodes),
+        # kube_bench_itest (rules_itest service_test) and
+        # kube_bench_expect_fail_test each boot a cluster.
         # --local_test_jobs=2: eight cluster tests starting at once on a
         # 4-vCPU runner made `docker info` take >5 s and three launchers
         # misreported "no container runtime" (PR #11's first run). The
@@ -80,6 +83,11 @@ jobs:
             //tests:k8s_1_35_version_test \
             //tests:k8s_1_36_version_test \
             //tests:k8s_1_37_version_test \
+            //tests:kube_bench_unit_test \
+            //tests:kube_bench_analysis_test \
+            //tests:kube_bench_test \
+            //tests:kube_bench_itest \
+            //tests:kube_bench_expect_fail_test \
             --test_output=errors \
             --local_test_jobs=2
 

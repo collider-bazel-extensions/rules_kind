@@ -97,6 +97,9 @@ MODULE.bazel / WORKSPACE
         ▼
   kind_health_check  (private/cluster.bzl)
     file-exists health probe
+
+  kube_bench_test  (private/kube_bench.bzl + kube_bench.py)
+    kube-bench Jobs on the cluster's nodes (see kube_bench_test below)
 ```
 
 ---
@@ -542,6 +545,12 @@ rules_itest service manager
 - `k8s_version` must be a known version string.
 - `config` must be a single `.yaml` file.
 
+`kube_bench_test` validates at analysis time that the cluster loads
+`@rules_kind//:kube_bench_image`, that `benchmark` is `"auto"` (with a
+mapping for the cluster's version) or a generic CIS benchmark in the pinned
+image, and that `targets` are known kube-bench targets without duplicates.
+Its ignore file's shape is checked by a validation action at build time.
+
 Failures surface as `bazel build` errors, not as runtime failures.
 
 ---
@@ -578,6 +587,60 @@ Every kind cluster on podman joins one podman network, `kind`. kind's podman pro
 
 kind fails at that step before it creates any node, and on a second run it finds the network and uses it. So `_create_cluster` retries `kind create cluster` (up to 3 attempts, 1 s then 2 s apart) when its output contains `network already exists`, and fails at once on anything else. Pre-creating the network ourselves under a lock was rejected: kind picks the network's IPv6 subnet itself, and a network created differently would be used as-is. `//tests:launcher_unit_test` covers the retry with a fake kind; with the fix, 8 concurrent real creates in 4 rounds on fresh networks all succeeded (4 retried).
 
+## kube_bench_test (v0.4.0, #22)
+
+`kube_bench_test` runs kube-bench (CIS Kubernetes Benchmark) on every node of
+a `kind_cluster` and fails on a FAIL result whose check id isn't in its
+ignore file, or on an expired ignore entry. It lives here, not in a package of
+its own, because it needs a running kind cluster and means nothing without
+one.
+
+```
+kube_bench_test (private/kube_bench.bzl)       analysis: cluster loads //:kube_bench_image,
+  │                                            benchmark/targets valid; build: ignore file shape
+  ▼
+kube_bench.py --run <config.json>
+  ├── $TEST_TMPDIR/<cluster>.env exists?  yes → use it (rules_itest service)
+  │                                       no  → start the cluster's launcher; SIGTERM it at the end
+  ├── namespace rules-kind-kube-bench-<hex> (PSA privileged)
+  ├── one Job per node: nodeName, hostPID, host paths read-only, image pull policy Never
+  │     kube-bench run --benchmark B --targets T --json   (framed stdout/stderr)
+  ├── kubectl logs → raw JSON → $TEST_UNDECLARED_OUTPUTS_DIR/kube-bench/<node>.json
+  └── evaluate (ignore file, today) → summary → exit 0/1
+```
+
+### Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Image fetch | A rules_kind repository rule (`private/kube_bench_image.bzl`) declared by the `kind` extension, not rules_oci's `oci.pull` | `oci.pull` in rules_kind's consumer-facing extension would make rules_oci (and aspect_bazel_lib, its toolchains, …) a non-dev dependency of every rules_kind consumer, used or not, and pull its versions into their resolution. Consumers would need nothing of rules_oci but a docker-archive. The repo rule downloads by digest only: the index (its sha256 is the pinned index digest), the platform manifest (must be the one the index lists *and* the one pinned), then config and layers, each verified by Bazel's `sha256`. `private/docker_archive.py` writes a deterministic docker-archive (layers stay gzip; containerd's importer and `docker load` detect it). The repository cache keeps the blobs. rules_argocd's `oci.pull` pattern stays right for a dev-only test image. |
+| Registries | mirror.gcr.io first, then registry-1.docker.io (anonymous token) | The digest fixes the content whichever registry serves it; Google's Docker Hub cache avoids Docker Hub's anonymous pull limit on shared CI runners (the reason rules_argocd uses it). Both tested. |
+| Platforms | linux/amd64 and linux/arm64, selected on the target CPU (the kind nodes' CPU) | The two platforms kind nodes run on; only the selected repo is fetched. |
+| Getting the image into the nodes | The user lists `@rules_kind//:kube_bench_image` in `kind_cluster(images = …)`; analysis fails if it's missing | Same path as every other preloaded image (`kind load image-archive` at boot), explicit in the BUILD file, checked before anything runs. Loading it from the test instead would need the launcher's runtime detection and podman environment a second time. `KindClusterInfo` (new) exposes the cluster's images, version, name and launcher. |
+| No pull at run time | `imagePullPolicy: Never`; a pod waiting on `ErrImageNeverPull` fails the test with the fix | `IfNotPresent` would silently pull on a cluster that lacks it, which also breaks under rootless podman's pod DNS (#5). |
+| Where the cluster comes from | The `cluster` attribute; standalone the test starts it, under rules_itest it uses the service's | The issue's API (`cluster = ":cluster"`) and the rules_itest composition both work with one rule. The env file is the switch: rules_itest health-checks the services before running the test, so the file exists exactly when the cluster is a service. Under a `service_test` (`SVCCTL_PORT` set) without it, the test fails rather than starting a second cluster. A standalone test owns its cluster like the in-tree tests do (launcher as a child; SIGTERM at the end; the reaper covers kills). |
+| One Job per node | `nodeName` + toleration of every taint; control-plane nodes run `targets` (`policies` once), workers `node` | `nodeName` bypasses the scheduler, so a tainted control plane needs no node selector; per-node Jobs give per-node JSON. `policies` is cluster-wide. |
+| Host access | `hostPID: true`, read-only `type: Directory` host paths: upstream `job.yaml`'s list minus the paths a kubeadm node lacks (`/var/lib/kube-scheduler`, `/var/lib/kube-controller-manager`, `/srv/kubernetes`), `/var/lib/etcd` on control-plane nodes only | `Directory` creates nothing on a node (the default type lets containerd create missing paths, which would change a user's cluster under rules_itest) and fails visibly if a path is missing. |
+| API access | No service account token | Only `policies` checks use the API, and they are all unscored: with read access they still report WARN (tried: 5.2.3 found the Job's own `hostPID` and still said WARN). Granting cluster-wide read (secrets included) buys nothing. |
+| Benchmark | `"auto"` maps `k8s_version` with a rules_kind table; explicit generic CIS names allowed | Deterministic and checked at analysis time. kube-bench v0.16.0's newest is cis-1.12 (1.32–1.34); 1.35+ get cis-1.12, the same as kube-bench's own detection picks. The image's `cfg/` has `cis-1.11` and `cis-1.12`, the benchmarks the supported versions use (`tools/update_kube_bench.sh` lists them). Distribution benchmarks (eks, gke, k3s, …) don't describe kind. |
+| WARN | Listed, never failing | kube-bench gives WARN for Manual and unscored checks it can't decide; every cluster has dozens (56 on a kind control plane). Failing on them would make the test useless; hiding them would hide the manual work CIS asks for. |
+| Ignore file | `checks:` entries with `id`, `reason`, optional `expires`; rules_trivy's YAML subset reader | rules_trivy and rules_osv conventions: reason required, an expiry date, an expired entry fails by name, every problem listed. The expiry is optional here, as the issue asks: many kind exceptions are permanent properties of kind, not findings awaiting a fix. No YAML library, like rules_trivy. |
+| When the file is checked | Shape at build time (validation action `KubeBenchIgnoreCheck`), expiry at test time | The date isn't a build input, so a cached validation can't depend on it. rules_trivy checks both at test time; a build-time check fails `bazel build` too. The runner re-checks the shape (covers `--norun_validations`). |
+| Stale entries | Listed with what each node reported; `fail_on_stale` opt-in | A stale entry is noise, not a risk; rules_trivy also only notes entries that matched nothing. |
+| Output | The raw JSON per node, `summary.txt`; JSON framed between markers in the pod log | `kubectl logs` merges stdout and stderr; the frame keeps kube-bench's stderr (e.g. its version warning) out of the JSON. |
+
+### Under rootless podman
+
+No difference was found. With rootless podman, a kind node is a container
+in the user's user namespace, and "the host" for a pod is that node
+container: `hostPID` shares its PID namespace (where kubelet, etcd and the
+static control-plane pods run, which kube-bench finds with `ps`), and host
+paths are its filesystem. Inside the user namespace the node's files are
+root-owned with kubeadm's modes, so ownership and permission checks match
+docker's. The same 12 checks fail on the control plane (14 on a 2-node
+cluster) for kubeadm reasons. The docker CI job runs the same tests with the
+same ignore file.
+
 ## Known limitations and non-goals
 
 - **Docker or podman required.** Tests must run with `tags = ["no-sandbox"]`
@@ -600,3 +663,7 @@ kind fails at that step before it creates any node, and on a second run it finds
 - **Target name collision.** Two `kind_cluster` targets with the same local
   name in different packages write to the same env file path.
 - **Windows not supported** (no pre-built binary source; PRs welcome).
+- **kube_bench_test checks against cis-1.12 for 1.35–1.37**, the newest
+  generic CIS benchmark in kube-bench v0.16.0 (written for 1.32–1.34).
+  Re-pin with `tools/update_kube_bench.sh` and extend
+  `KUBE_BENCH_AUTO_BENCHMARK` when a newer one ships.

@@ -1,6 +1,6 @@
 module(
     name = "rules_kind",
-    version = "0.3.3",
+    version = "0.4.0",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.5.0")
@@ -10,6 +10,10 @@ bazel_dep(name = "platforms", version = "0.0.9")
 # tests/BUILD.bazel needs them. Dev-only since the rule library itself doesn't
 # emit shell rules; consumers don't inherit this.
 bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
+
+# Dev only: //tests:kube_bench_itest runs kube_bench_test as the test of a
+# rules_itest service_test, the way consumers compose kind_cluster.
+bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
 
 kind = use_extension("//:extensions.bzl", "kind")
 kind.system(versions = ["1.29", "1.32"])
@@ -34,4 +38,7 @@ use_repo(kind,
     "kind_1_37_linux_amd64",
     "kind_1_37_darwin_arm64",
     "kind_1_37_darwin_amd64",
+    # kube_bench_test's image (//:kube_bench_image); see private/kube_bench_versions.bzl.
+    "kube_bench_image_linux_amd64",
+    "kube_bench_image_linux_arm64",
 )

@@ -1,5 +1,7 @@
+load("@rules_itest//:itest.bzl", "itest_service", "service_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//:defs.bzl", "kind_cluster", "kind_health_check")
+load("//:defs.bzl", "kind_cluster", "kind_health_check", "kube_bench_test")
+load(":kube_bench_analysis_tests.bzl", "kube_bench_analysis_test_suite")
 
 # ---------------------------------------------------------------------------
 # kind_cluster service for all Docker-requiring tests
@@ -246,3 +248,147 @@ sh_test(
     srcs = ["checksums_test.sh"],
     data = ["//:extensions.bzl"],
 )
+
+# ---------------------------------------------------------------------------
+# kube_bench_test (#22) — kube-bench (CIS benchmark) against kind clusters.
+# The ignore file lists the checks a stock kind cluster fails, with reasons.
+# ---------------------------------------------------------------------------
+
+# Standalone: the test starts the 2-node cluster itself, checks both nodes,
+# and deletes the cluster.
+kind_cluster(
+    name        = "kube_bench_cluster",
+    k8s_version = "1.35",
+    config      = "kube_bench/kind_two_nodes.yaml",
+    images      = ["//:kube_bench_image"],
+    tags        = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kube_bench_test(
+    name    = "kube_bench_test",
+    cluster = ":kube_bench_cluster",
+    ignore  = "kube_bench/kind_ignore.yaml",
+    tags    = ["manual"],
+)
+
+# The way consumers compose it: the test of a rules_itest service_test whose
+# services include the cluster (1.37, benchmark auto -> cis-1.12).
+kind_cluster(
+    name        = "kube_bench_itest_cluster",
+    k8s_version = "1.37",
+    images      = ["//:kube_bench_image"],
+    tags        = ["manual", "no-sandbox", "requires-docker"],
+)
+
+kind_health_check(
+    name    = "kube_bench_itest_cluster_health",
+    cluster = ":kube_bench_itest_cluster",
+    tags    = ["manual"],
+)
+
+itest_service(
+    name             = "kube_bench_itest_svc",
+    exe              = ":kube_bench_itest_cluster",
+    health_check     = ":kube_bench_itest_cluster_health",
+    # Let the launcher finish `kind delete` before the test ends.
+    shutdown_timeout = "300s",
+    tags             = ["manual"],
+)
+
+kube_bench_test(
+    name    = "kube_bench_itest_bin",
+    cluster = ":kube_bench_itest_cluster",
+    ignore  = "kube_bench/kind_ignore.yaml",
+    tags    = ["manual"],
+)
+
+service_test(
+    name     = "kube_bench_itest",
+    test     = ":kube_bench_itest_bin",
+    services = [":kube_bench_itest_svc"],
+    size     = "large",
+    timeout  = "long",
+    tags     = ["manual", "no-sandbox", "requires-docker"],
+)
+
+# Failure modes, on one cluster: kube_bench_expect_fail_test.sh starts it and
+# runs these kube_bench_tests (they find its env file and use it):
+#   pass      kind_ignore.yaml plus an entry for a check that passes: passes,
+#             listing the stale entry
+#   unlisted  without the 1.2.15 entry: fails, naming 1.2.15
+#   expired   1.2.15 expired 2020-01-01: fails, naming the entry
+#   stale     the stale entry with fail_on_stale = True: fails
+kind_cluster(
+    name        = "kube_bench_fail_cluster",
+    k8s_version = "1.35",
+    images      = ["//:kube_bench_image"],
+    tags        = ["manual", "no-sandbox", "requires-docker"],
+)
+
+genrule(
+    name = "kube_bench_ignore_variants",
+    srcs = ["kube_bench/kind_ignore.yaml"],
+    outs = [
+        "kube_bench/stale_ignore.yaml",
+        "kube_bench/unlisted_ignore.yaml",
+        "kube_bench/expired_ignore.yaml",
+    ],
+    cmd = """
+        {
+            cat $<
+            echo '  - id: "1.1.1"'
+            echo '    reason: stale on purpose (1.1.1 passes on kind)'
+        } > $(location kube_bench/stale_ignore.yaml)
+        awk '/^  - id:/ {skip = ($$0 ~ /"1[.]2[.]15"/)} !skip' $< > $(location kube_bench/unlisted_ignore.yaml)
+        awk '{print} /^  - id: "1[.]2[.]15"$$/ {print "    expires: 2020-01-01"}' $< > $(location kube_bench/expired_ignore.yaml)
+        grep -q '"1.2.15"' $(location kube_bench/unlisted_ignore.yaml) && exit 1
+        grep -q 'expires: 2020-01-01' $(location kube_bench/expired_ignore.yaml)
+    """,
+)
+
+[
+    kube_bench_test(
+        name          = "kube_bench_" + variant,
+        cluster       = ":kube_bench_fail_cluster",
+        ignore        = "kube_bench/{}_ignore.yaml".format(ignore),
+        fail_on_stale = variant == "stale",
+        tags          = ["manual"],
+    )
+    for variant, ignore in [
+        ("pass", "stale"),
+        ("unlisted", "unlisted"),
+        ("expired", "expired"),
+        ("stale", "stale"),
+    ]
+]
+
+sh_test(
+    name    = "kube_bench_expect_fail_test",
+    srcs    = ["kube_bench_expect_fail_test.sh"],
+    data    = [
+        ":kube_bench_expired",
+        ":kube_bench_fail_cluster",
+        ":kube_bench_pass",
+        ":kube_bench_stale",
+        ":kube_bench_unlisted",
+    ],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)
+
+# No cluster: the ignore file, the result logic and the Job spec, on
+# checked-in kube-bench JSON from a 2-node kind cluster.
+sh_test(
+    name = "kube_bench_unit_test",
+    srcs = ["kube_bench_unit_test.sh"],
+    data = [
+        "kube_bench/control-plane.json",
+        "kube_bench/kind_ignore.yaml",
+        "kube_bench/worker.json",
+        "kube_bench_unit_test.py",
+        "//private:kube_bench.py",
+    ],
+)
+
+kube_bench_analysis_test_suite(name = "kube_bench_analysis_test")

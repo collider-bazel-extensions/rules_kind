@@ -1,4 +1,7 @@
-"""Bzlmod module extension: fetch or symlink kind + kubectl binaries."""
+"""Bzlmod module extension: fetch or symlink kind + kubectl binaries, and fetch
+the digest-pinned kube-bench image (kube_bench_test)."""
+
+load("//private:kube_bench_image.bzl", "kube_bench_image_repos")
 
 # kind_version + kubectl version pairs per Kubernetes minor version.
 # kind binaries: https://github.com/kubernetes-sigs/kind/releases
@@ -371,6 +374,10 @@ def _kind_extension(module_ctx):
                         bin_dir  = tag.bin_dir,
                         platform = platform,
                     )
+
+    # The kube-bench image for kube_bench_test (@rules_kind//:kube_bench_image).
+    # Always declared; fetched only when a build needs it.
+    kube_bench_image_repos()
 
 kind = module_extension(
     implementation = _kind_extension,
