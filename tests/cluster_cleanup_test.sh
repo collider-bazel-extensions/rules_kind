@@ -151,8 +151,17 @@ if [[ $(node_count "$name") -eq 0 ]]; then
 fi
 [[ ! -e "$state_dir/$name.json" ]] || { echo "FAIL: kept cluster $name has an ownership record" >&2; exit 1; }
 echo "PASS: $name kept"
-# Clean up the kept cluster ourselves.
-"$runtime" rm -f $("$runtime" ps -a -q --filter "label=io.x-k8s.kind.cluster=$name") >/dev/null
+# Clean up the kept cluster ourselves. Rootless podman shares one network
+# namespace between containers, and removing one while other clusters start
+# or stop can fail tearing it down ("rootless netns: kill network process:
+# permission denied"); retry, then check nothing is left.
+for _ in 1 2 3; do
+    ids=$("$runtime" ps -a -q --filter "label=io.x-k8s.kind.cluster=$name")
+    [[ -z $ids ]] && break
+    "$runtime" rm -f $ids >/dev/null || sleep 2
+done
+[[ -z $("$runtime" ps -a -q --filter "label=io.x-k8s.kind.cluster=$name") ]] \
+    || { echo "FAIL: could not remove kept cluster $name" >&2; exit 1; }
 
 # --- 4. SIGKILL during kind delete --------------------------------------------
 echo "=== SIGKILL while the launcher runs kind delete"
