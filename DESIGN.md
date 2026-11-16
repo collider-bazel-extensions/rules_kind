@@ -572,6 +572,12 @@ Failures surface as `bazel build` errors, not as runtime failures.
 
 `tests/` is `export-ignore` (`.gitattributes`): its packages load dev-only modules (rules_shell), which made `@rules_kind//...` unloadable for consumers. `REPO.bazel` `ignore_directories` would also hide them from this repo's own `bazel test`, so it isn't used. A `git_override` clone still contains them. CI's `consumer` job (`.github/consumer/check.sh`) checks the commit's `git archive`: the directories are absent and `@rules_kind//...` loads for a consumer.
 
+## podman `kind` network race (v0.3.3)
+
+Every kind cluster on podman joins one podman network, `kind`. kind's podman provider checks whether it exists and creates it if not, without handling a concurrent create, so two launchers creating clusters at once (parallel `bazel test`) can both find it missing: the second `podman network create` fails with `network name kind already used: network already exists`, and so does that `kind create cluster`. On CI this flaked 2 of 3 podman runs; locally, two concurrent creates on a fresh network lost the race in 2 of 3 rounds. kind's docker provider handles the same race itself.
+
+kind fails at that step before it creates any node, and on a second run it finds the network and uses it. So `_create_cluster` retries `kind create cluster` (up to 3 attempts, 1 s then 2 s apart) when its output contains `network already exists`, and fails at once on anything else. Pre-creating the network ourselves under a lock was rejected: kind picks the network's IPv6 subnet itself, and a network created differently would be used as-is. `//tests:launcher_unit_test` covers the retry with a fake kind; with the fix, 8 concurrent real creates in 4 rounds on fresh networks all succeeded (4 retried).
+
 ## Known limitations and non-goals
 
 - **Docker or podman required.** Tests must run with `tags = ["no-sandbox"]`

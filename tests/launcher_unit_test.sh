@@ -6,6 +6,8 @@ set -euo pipefail
 #     holder, and gets the slot once the holder is SIGKILLed; 0 = no limit.
 #   - RULES_KIND_SLOT_DIR holds slots any user can lock.
 #   - _log survives a closed stdout (#12), so teardown still reaches kind.
+#   - _create_cluster retries when two clusters race to create podman's
+#     `kind` network ("network already exists"), and only then.
 
 [[ -n "${TEST_TMPDIR:-}" ]] || { echo "ERROR: \$TEST_TMPDIR not set" >&2; exit 1; }
 RUNFILES="${TEST_SRCDIR:-${RUNFILES_DIR:-${BASH_SOURCE[0]}.runfiles}}"
@@ -84,5 +86,49 @@ open(sys.argv[1], "w").write("reached")
 [[ "$(cat "$TEST_TMPDIR/after_log" 2>/dev/null)" == reached ]] \
     || { cat "$TEST_TMPDIR/c.err" >&2; echo "FAIL: _log raised on a closed stdout" >&2; exit 1; }
 echo "PASS: _log tolerates a closed stdout"
+
+# --- 5. podman `kind` network race ------------------------------------------
+# A fake kind: fails like kind's podman provider does when another cluster
+# created the network first, a set number of times, then succeeds. Each call
+# appends to $calls.
+echo "=== kind network race"
+fake="$TEST_TMPDIR/fake-kind"
+calls="$TEST_TMPDIR/kind-calls"
+cat > "$fake" <<'FAKE'
+#!/usr/bin/env bash
+echo call >> "$FAKE_CALLS"
+n=$(wc -l < "$FAKE_CALLS")
+if (( n <= FAKE_FAILURES )); then
+    echo "ERROR: failed to create cluster: failed to ensure podman network: command \"podman network create -d=bridge kind\" failed with error: exit status 125" >&2
+    echo "Command Output: Error: ${FAKE_MESSAGE}" >&2
+    exit 1
+fi
+FAKE
+chmod +x "$fake"
+race() { # <failures> <message>; prints the number of kind calls, exits like _create_cluster
+    rm -f "$calls"
+    FAKE_CALLS="$calls" FAKE_FAILURES="$1" FAKE_MESSAGE="$2" python3 -c '
+import os, sys, launcher
+launcher.time.sleep = lambda s: None
+launcher._create_cluster(sys.argv[1], "kind-race", "img", None, dict(os.environ))
+' "$fake" > "$TEST_TMPDIR/race.log" 2>&1
+}
+race 2 "network name kind already used: network already exists" \
+    || { cat "$TEST_TMPDIR/race.log" >&2; echo "FAIL: create failed after two lost races" >&2; exit 1; }
+[[ "$(wc -l < "$calls")" == 3 ]] || { echo "FAIL: expected 3 kind calls, got $(wc -l < "$calls")" >&2; exit 1; }
+grep -q "created the kind network at the same time; retrying" "$TEST_TMPDIR/race.log" \
+    || { cat "$TEST_TMPDIR/race.log" >&2; echo "FAIL: no retry message" >&2; exit 1; }
+echo "PASS: a lost network race is retried"
+if race 5 "network name kind already used: network already exists"; then
+    echo "FAIL: create succeeded although every attempt lost the race" >&2; exit 1
+fi
+[[ "$(wc -l < "$calls")" == 3 ]] || { echo "FAIL: expected 3 attempts, got $(wc -l < "$calls")" >&2; exit 1; }
+grep -q "network already exists" "$TEST_TMPDIR/race.log" || { echo "FAIL: error lost kind's output" >&2; exit 1; }
+echo "PASS: retries stop after 3 attempts, with kind's error"
+if race 1 "some other failure"; then
+    echo "FAIL: create succeeded after an unrelated failure" >&2; exit 1
+fi
+[[ "$(wc -l < "$calls")" == 1 ]] || { echo "FAIL: an unrelated failure was retried" >&2; exit 1; }
+echo "PASS: other failures are not retried"
 
 echo "PASS"

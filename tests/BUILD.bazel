@@ -59,7 +59,8 @@ sh_test(
 
 # ---------------------------------------------------------------------------
 # launcher_unit_test — no Docker required
-# Tests: RULES_KIND_MAX_CLUSTERS slots (#15); _log on a closed stdout (#12).
+# Tests: RULES_KIND_MAX_CLUSTERS slots (#15); _log on a closed stdout (#12);
+# the podman `kind` network race is retried.
 # ---------------------------------------------------------------------------
 
 sh_test(

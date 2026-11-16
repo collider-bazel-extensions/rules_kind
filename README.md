@@ -53,7 +53,9 @@ re-executes itself under `systemd-run --scope --user --property=Delegate=yes`
 when podman requires cgroup delegation. It uses your normal podman image
 store (`~/.local/share/containers`), even though Bazel sets `HOME` to the
 test's tmpdir, so the `kindest/node` image is pulled once, not per test run
-(v0.2.1+).
+(v0.2.1+). Clusters created at the same time share podman's `kind` network;
+when two of them race to create it, the loser's `kind create cluster` is
+retried (v0.3.3+).
 
 Install kind:
 
@@ -69,7 +71,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.3.2")
+bazel_dep(name = "rules_kind", version = "0.3.3")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 

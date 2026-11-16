@@ -323,6 +323,15 @@ def _kind_env(runtime_env):
     return env
 
 
+# kind's podman provider checks for its `kind` network and then creates it,
+# so two clusters created at once can both find it missing; the second
+# `podman network create` fails and so does that `kind create cluster`. kind
+# fails at that step before it creates any node, and on a retry it finds the
+# network and uses it. (kind's docker provider handles the same race itself.)
+_NETWORK_RACE = "network already exists"
+_CREATE_ATTEMPTS = 3
+
+
 def _create_cluster(kind_bin, cluster_name, node_image, kind_config, env):
     cmd = [
         kind_bin, "create", "cluster",
@@ -332,7 +341,19 @@ def _create_cluster(kind_bin, cluster_name, node_image, kind_config, env):
     if kind_config:
         cmd += ["--config", kind_config]
     _log(f"creating cluster {cluster_name} ({node_image})…")
-    _run(cmd, env=env)
+    for attempt in range(1, _CREATE_ATTEMPTS + 1):
+        result = _run(cmd, env=env, check=False)
+        if result.returncode == 0:
+            break
+        if attempt < _CREATE_ATTEMPTS and _NETWORK_RACE in result.stdout + result.stderr:
+            _log("another cluster created the kind network at the same time; retrying")
+            time.sleep(attempt)
+            continue
+        raise RuntimeError(
+            f"command failed: {' '.join(str(a) for a in cmd)}\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
     _log(f"cluster {cluster_name} created")
 
 
