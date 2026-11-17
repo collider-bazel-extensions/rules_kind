@@ -839,37 +839,60 @@ def _claim_paths(test_tmpdir, name, label):
     cluster (#25). Two kind_cluster targets with the same name (in different
     packages) in one test would write the same files; the second launcher
     fails at once, naming both, rather than one cluster's env file silently
-    pointing at the other. A claim whose launcher is gone is taken over."""
+    pointing at the other. A claim whose launcher is gone is taken over.
+
+    The claim is `$TEST_TMPDIR/<name>.claim`, created atomically (a link of a
+    complete file) and holding {"label", "pid", "rule"}, the format
+    rules_kubernetes uses too, so a kind_cluster and a kubernetes_server with
+    the same name in one test also see each other. Our own claims add the
+    process start time and boot id, which make the liveness check immune to
+    pid reuse."""
     path = os.path.join(test_tmpdir, f"{name}.claim")
     pid = os.getpid()
-    mine = {"label": label, "boot_id": _boot_id(), "pid": pid,
-            "start_time": _proc_start_time(pid)}
-    for _ in range(3):
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
+    mine = {"label": label, "pid": pid, "rule": "kind_cluster",
+            "boot_id": _boot_id(), "start_time": _proc_start_time(pid)}
+    tmp = f"{path}.{pid}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(mine, f)
+    try:
+        for _ in range(5):
+            try:
+                os.link(tmp, path)
+                return path
+            except FileExistsError:
+                pass
             try:
                 with open(path) as f:
                     other = json.load(f)
-            except (OSError, ValueError):
-                other = {}
-            if other.get("pid") == pid:
+                other_pid = int(other["pid"])
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, KeyError, TypeError):
+                other, other_pid = {}, None
+            if other_pid == pid:
                 return path
-            if _alive(other.get("boot_id"), other.get("pid"), other.get("start_time")):
+            if other_pid is None:
+                alive = True  # unreadable: never take it over
+            elif "start_time" in other:
+                alive = _alive(other.get("boot_id"), other_pid, other["start_time"])
+            else:
+                alive = _proc_start_time(other_pid) is not None
+            if alive:
+                holder = other.get("label") or "another launcher"
+                who = (f"{holder} (pid {other_pid})" if other_pid
+                       else f"{holder} ({path} is unreadable)")
                 raise ClaimError(
                     f"kind_cluster {label}: $TEST_TMPDIR/{name}.env and "
-                    f"{name}.kubeconfig are already used by "
-                    f"{other.get('label', '?')} (pid {other.get('pid')}) in this "
-                    f"test; give the kind_cluster targets different names")
+                    f"{name}.kubeconfig are already used by {who} in this "
+                    f"test; give the targets different names")
+            _log(f"taking over the claim on {name} from exited pid {other_pid}")
             try:
                 os.remove(path)
             except FileNotFoundError:
                 pass
-            continue
-        with os.fdopen(fd, "w") as f:
-            json.dump(mine, f)
-        return path
-    raise ClaimError(f"kind_cluster {label}: could not claim {path}")
+        raise ClaimError(f"kind_cluster {label}: could not claim {path}")
+    finally:
+        os.remove(tmp)
 
 
 def _reaper_alive(rec):

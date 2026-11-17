@@ -169,5 +169,15 @@ echo "PASS: differently named clusters claim their own paths"
 kill -KILL "$claim_holder"; wait "$claim_holder" 2>/dev/null || true
 claim c //b:c || { cat "$TEST_TMPDIR/claim_b.log" >&2; echo "FAIL: a dead launcher's claim was not taken over" >&2; exit 1; }
 echo "PASS: a dead launcher's claim is taken over"
+# A rules_kubernetes claim ({"label", "pid", "rule"}) with a live pid holds.
+printf '{"label": "//k8s:e", "pid": %d, "rule": "kubernetes_server"}' "$$" > "$claims/e.claim"
+if claim e //b:e; then echo "FAIL: a live rules_kubernetes claim was taken over" >&2; exit 1; fi
+grep -qF "already used by //k8s:e (pid $$)" "$TEST_TMPDIR/claim_b.log" \
+    || { cat "$TEST_TMPDIR/claim_b.log" >&2; echo "FAIL: clash with a rules_kubernetes claim does not name it" >&2; exit 1; }
+echo "PASS: a live rules_kubernetes claim on the same name holds"
+# An unreadable claim (say, half written by an older launcher) is never taken over.
+printf '{"label": "//x' > "$claims/f.claim"
+if claim f //b:f; then echo "FAIL: an unreadable claim was taken over" >&2; exit 1; fi
+echo "PASS: an unreadable claim is not taken over"
 
 echo "PASS"

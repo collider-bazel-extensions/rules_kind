@@ -657,9 +657,13 @@ talked to cluster B, with no error.
 - **Claims.** The env file and kubeconfig are named by the target name alone,
   so `//a:k8s` and `//b:k8s` in one test would still collide. Before doing
   anything else the launcher creates `$TEST_TMPDIR/<target_name>.claim`
-  (`O_EXCL`) holding its label, pid, process start time and boot id. If the
-  file exists and that process still runs, the launcher exits 1 naming both
-  labels. A claim whose process is gone is taken over.
+  atomically (it writes a temp file and `link`s it into place, so a reader
+  never sees half a claim) holding `{"label", "pid", "rule"}` plus its
+  process start time and boot id. If the file exists and that process still
+  runs, the launcher exits 1 naming both labels. A claim whose process is
+  gone is taken over; an unreadable one never is. rules_kubernetes (v0.7.0)
+  writes the same file in the same format, so a `kind_cluster` and a
+  `kubernetes_server` with the same name in one test refuse each other too.
 - **Breaking:** anything that hard-codes `$TEST_TMPDIR/kubeconfig` must read
   `KUBECONFIG` from the env file instead (or use `<name>.kubeconfig`).
 - **Tests:** `launcher_unit_test` (claims, `--kubeconfig`), and

@@ -38,7 +38,7 @@ deadline=$(( $(date +%s) + 900 ))
 for n in two_a two_b; do
     while [[ ! -f "$TEST_TMPDIR/$n.env" ]]; do
         if [[ $(date +%s) -gt $deadline ]] || ! kill -0 "${pids[0]}" 2>/dev/null || ! kill -0 "${pids[1]}" 2>/dev/null; then
-            tail -20 "$TEST_TMPDIR/two_a.log" "$TEST_TMPDIR/two_b.log" >&2
+            tail -n 20 "$TEST_TMPDIR/two_a.log" "$TEST_TMPDIR/two_b.log" >&2
             echo "FAIL: $n's env file not written" >&2; exit 1
         fi
         sleep 2
