@@ -109,12 +109,15 @@ if [[ -z "$RUNFILES_ROOT" ]]; then
 fi
 export RULES_KIND_MANIFEST="$RUNFILES_ROOT/{workspace}/{manifest_short}"
 export RULES_KIND_CLUSTER_TARGET_NAME="{cluster_name}"
+export RULES_KIND_CLUSTER_LABEL="{cluster_label}"
 exec python3 "$RUNFILES_ROOT/{workspace}/{launcher_short}" "$@"
 """.format(
         workspace      = workspace,
         manifest_short = manifest_short,
         launcher_short = launcher_short,
         cluster_name   = cluster_name,
+        cluster_label  = ("@" + ctx.label.repo_name if ctx.label.repo_name else "") +
+                         "//" + ctx.label.package + ":" + ctx.label.name,
     )
 
     wrapper = ctx.actions.declare_file(ctx.label.name + "_kind_cluster.sh")

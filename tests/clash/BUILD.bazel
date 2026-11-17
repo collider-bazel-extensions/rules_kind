@@ -1,0 +1,10 @@
+load("//:defs.bzl", "kind_cluster")
+
+# Same target name as //tests:two_a: two_clusters_test starts this next to
+# it in one test and expects it to fail at once, naming both (#25).
+kind_cluster(
+    name        = "two_a",
+    k8s_version = "1.35",
+    tags        = ["manual", "no-sandbox", "requires-docker"],
+    visibility  = ["//tests:__pkg__"],
+)

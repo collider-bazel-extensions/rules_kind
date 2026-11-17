@@ -392,3 +392,32 @@ sh_test(
 )
 
 kube_bench_analysis_test_suite(name = "kube_bench_analysis_test")
+
+# ---------------------------------------------------------------------------
+# two_clusters_test — requires Docker (#25)
+# Two kind_cluster targets in one test: each env file names its own
+# kubeconfig, which reaches its own cluster. A third with the same name as
+# one of them (//tests/clash:two_a) fails at once, naming both.
+# ---------------------------------------------------------------------------
+
+[
+    kind_cluster(
+        name        = name,
+        k8s_version = "1.35",
+        tags        = ["manual", "no-sandbox", "requires-docker"],
+    )
+    for name in ["two_a", "two_b"]
+]
+
+sh_test(
+    name    = "two_clusters_test",
+    srcs    = ["two_clusters_test.sh"],
+    data    = [
+        ":two_a",
+        ":two_b",
+        "//tests/clash:two_a",
+    ],
+    size    = "large",
+    timeout = "long",
+    tags    = ["manual", "no-sandbox", "requires-docker"],
+)

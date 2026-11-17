@@ -74,7 +74,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.4.1")
+bazel_dep(name = "rules_kind", version = "0.5.0")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -500,9 +500,11 @@ kube_bench_test(
 
 ### Environment variables written to the env file
 
+Each cluster writes `$TEST_TMPDIR/<name>.env` and its own `$TEST_TMPDIR/<name>.kubeconfig`, so a test can use several clusters (#25). Two `kind_cluster` targets with the same name (from different packages) in one test would share those files: the second fails at start, naming both.
+
 | Variable            | Example                        | Description                           |
 |---------------------|--------------------------------|---------------------------------------|
-| `KUBECONFIG`        | `$TEST_TMPDIR/kubeconfig`      | Kubeconfig for the kind cluster       |
+| `KUBECONFIG`        | `$TEST_TMPDIR/<name>.kubeconfig` | This cluster's own kubeconfig (`<name>` is the `kind_cluster` target name; `$TEST_TMPDIR/kubeconfig` before v0.5.0) |
 | `KIND_CLUSTER_NAME` | `kind-abc123def456`            | Unique cluster name                   |
 | `KUBE_API_SERVER`   | `https://127.0.0.1:6443`       | API server address                    |
 | `KUBECTL`           | `/path/to/kubectl`             | Absolute path to kubectl              |
