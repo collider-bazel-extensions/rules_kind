@@ -229,17 +229,18 @@ with the automatic systemd-run re-execution.
 ### Startup
 
 ```
+0. Claim $TEST_TMPDIR/<target_name>.claim (see One kubeconfig per cluster); fail if a live launcher holds it
 1. Generate cluster name: kind-<uuid[:12]>; log to ~/.local/state/rules_kind/<name>.log
    Sweep stale clusters (see Ownership records and sweep)
    Take a cluster slot; optionally wait for RULES_KIND_MIN_FREE_MB (see Admission)
    Write the ownership record; start the reaper
-2. kind create cluster --name <name> [--config <config_file>] [--image <digest-pinned kindest/node image for k8s_version>]
-3. kind get kubeconfig --name <name> > $TEST_TMPDIR/kubeconfig
+2. kind create cluster --name <name> --kubeconfig $TEST_TMPDIR/<target_name>.kubeconfig [--config <config_file>] [--image <digest-pinned kindest/node image for k8s_version>]
+3. kind get kubeconfig --name <name> > $TEST_TMPDIR/<target_name>.kubeconfig
 4. Poll kubectl cluster-info until API server responds (max 120 s)
 5. For each image in images[]:
        kind load docker-image <image> --name <name>
 6. For each file in manifest_files[]:
-       kubectl apply -f <file> --kubeconfig $TEST_TMPDIR/kubeconfig
+       kubectl apply -f <file> --kubeconfig $TEST_TMPDIR/<target_name>.kubeconfig
 7. Write $TEST_TMPDIR/<target_name>.env atomically (temp file + os.replace)
 8. Wait, checking once a second that the parent process is still alive
 ```
@@ -424,7 +425,7 @@ Written atomically to `$TEST_TMPDIR/<target_name>.env` once the cluster is
 fully ready:
 
 ```
-KUBECONFIG=/tmp/.../kubeconfig
+KUBECONFIG=/tmp/.../<name>.kubeconfig
 KIND_CLUSTER_NAME=kind-abc123def456
 KUBE_API_SERVER=https://127.0.0.1:6443
 KUBECTL=/path/to/kubectl
@@ -640,6 +641,31 @@ root-owned with kubeadm's modes, so ownership and permission checks match
 docker's. The same 12 checks fail on the control plane (14 on a 2-node
 cluster) for kubeadm reasons. The docker CI job runs the same tests with the
 same ignore file.
+
+## One kubeconfig per cluster (v0.5.0, #25)
+
+Before v0.5.0 every launcher wrote `$TEST_TMPDIR/kubeconfig`, so two
+`kind_cluster` targets in one test (two `itest_service`s, or a test that
+starts two launchers) overwrote each other's kubeconfig: whichever finished
+last won, and both env files named it. A test reading cluster A's env file
+talked to cluster B, with no error.
+
+- **Per-cluster paths.** The kubeconfig is `$TEST_TMPDIR/<target_name>.kubeconfig`,
+  next to `<target_name>.env`, and `kind create cluster` gets
+  `--kubeconfig` for it too, so kind never merges into a shared
+  `$KUBECONFIG` or `~/.kube/config`.
+- **Claims.** The env file and kubeconfig are named by the target name alone,
+  so `//a:k8s` and `//b:k8s` in one test would still collide. Before doing
+  anything else the launcher creates `$TEST_TMPDIR/<target_name>.claim`
+  (`O_EXCL`) holding its label, pid, process start time and boot id. If the
+  file exists and that process still runs, the launcher exits 1 naming both
+  labels. A claim whose process is gone is taken over.
+- **Breaking:** anything that hard-codes `$TEST_TMPDIR/kubeconfig` must read
+  `KUBECONFIG` from the env file instead (or use `<name>.kubeconfig`).
+- **Tests:** `launcher_unit_test` (claims, `--kubeconfig`), and
+  `two_clusters_test`, which boots two clusters in one test and checks each
+  kubeconfig reaches its own cluster, then starts `//tests/clash:two_a` and
+  expects it to fail at once.
 
 ## Known limitations and non-goals
 

@@ -7,7 +7,10 @@ set -euo pipefail
 #   - RULES_KIND_SLOT_DIR holds slots any user can lock.
 #   - _log survives a closed stdout (#12), so teardown still reaches kind.
 #   - _create_cluster retries when two clusters race to create podman's
-#     `kind` network ("network already exists"), and only then.
+#     `kind` network ("network already exists"), and only then; kind create
+#     gets the cluster's own --kubeconfig (#25).
+#   - Path claims (#25): a second cluster with the same target name in one
+#     test fails, naming both; a dead launcher's claim is taken over.
 
 [[ -n "${TEST_TMPDIR:-}" ]] || { echo "ERROR: \$TEST_TMPDIR not set" >&2; exit 1; }
 RUNFILES="${TEST_SRCDIR:-${RUNFILES_DIR:-${BASH_SOURCE[0]}.runfiles}}"
@@ -97,6 +100,7 @@ calls="$TEST_TMPDIR/kind-calls"
 cat > "$fake" <<'FAKE'
 #!/usr/bin/env bash
 echo call >> "$FAKE_CALLS"
+echo "$*" > "$FAKE_CALLS.args"
 n=$(wc -l < "$FAKE_CALLS")
 if (( n <= FAKE_FAILURES )); then
     echo "ERROR: failed to create cluster: failed to ensure podman network: command \"podman network create -d=bridge kind\" failed with error: exit status 125" >&2
@@ -110,7 +114,7 @@ race() { # <failures> <message>; prints the number of kind calls, exits like _cr
     FAKE_CALLS="$calls" FAKE_FAILURES="$1" FAKE_MESSAGE="$2" python3 -c '
 import os, sys, launcher
 launcher.time.sleep = lambda s: None
-launcher._create_cluster(sys.argv[1], "kind-race", "img", None, dict(os.environ))
+launcher._create_cluster(sys.argv[1], "kind-race", "img", None, dict(os.environ), "kubeconfig")
 ' "$fake" > "$TEST_TMPDIR/race.log" 2>&1
 }
 race 2 "network name kind already used: network already exists" \
@@ -119,6 +123,9 @@ race 2 "network name kind already used: network already exists" \
 grep -q "created the kind network at the same time; retrying" "$TEST_TMPDIR/race.log" \
     || { cat "$TEST_TMPDIR/race.log" >&2; echo "FAIL: no retry message" >&2; exit 1; }
 echo "PASS: a lost network race is retried"
+grep -q -- "--kubeconfig kubeconfig" "$calls.args" \
+    || { cat "$calls.args" >&2; echo "FAIL: kind create was not given the cluster's own --kubeconfig" >&2; exit 1; }
+echo "PASS: kind create writes the cluster's own kubeconfig"
 if race 5 "network name kind already used: network already exists"; then
     echo "FAIL: create succeeded although every attempt lost the race" >&2; exit 1
 fi
@@ -130,5 +137,37 @@ if race 1 "some other failure"; then
 fi
 [[ "$(wc -l < "$calls")" == 1 ]] || { echo "FAIL: an unrelated failure was retried" >&2; exit 1; }
 echo "PASS: other failures are not retried"
+
+# --- 5. Path claims: one $TEST_TMPDIR/<name>.env/.kubeconfig per test (#25)
+echo "=== path claims"
+claims="$TEST_TMPDIR/claims"; mkdir -p "$claims"
+python3 -c '
+import launcher, sys, time
+launcher._claim_paths(sys.argv[1], "c", "//a:c")
+print("claimed", flush=True)
+time.sleep(600)
+' "$claims" > "$TEST_TMPDIR/claim_a.log" 2>&1 &
+claim_holder=$!
+for _ in $(seq 50); do grep -q claimed "$TEST_TMPDIR/claim_a.log" && break; sleep 0.1; done
+grep -q claimed "$TEST_TMPDIR/claim_a.log" || { cat "$TEST_TMPDIR/claim_a.log" >&2; echo "FAIL: first claim failed" >&2; exit 1; }
+claim() { # <name> <label>
+    python3 -c '
+import launcher, sys
+try:
+    launcher._claim_paths(sys.argv[1], sys.argv[2], sys.argv[3])
+except launcher.ClaimError as e:
+    print(e); sys.exit(3)
+print("claimed")
+' "$claims" "$1" "$2" > "$TEST_TMPDIR/claim_b.log" 2>&1
+}
+if claim c //b:c; then echo "FAIL: a second cluster claimed c while //a:c holds it" >&2; exit 1; fi
+grep -qF 'kind_cluster //b:c: $TEST_TMPDIR/c.env and c.kubeconfig are already used by //a:c (pid '"$claim_holder"') in this test' "$TEST_TMPDIR/claim_b.log" \
+    || { cat "$TEST_TMPDIR/claim_b.log" >&2; echo "FAIL: clash message does not name both targets" >&2; exit 1; }
+echo "PASS: a second cluster with the same name fails, naming both"
+claim d //b:d || { cat "$TEST_TMPDIR/claim_b.log" >&2; echo "FAIL: a differently named cluster could not claim" >&2; exit 1; }
+echo "PASS: differently named clusters claim their own paths"
+kill -KILL "$claim_holder"; wait "$claim_holder" 2>/dev/null || true
+claim c //b:c || { cat "$TEST_TMPDIR/claim_b.log" >&2; echo "FAIL: a dead launcher's claim was not taken over" >&2; exit 1; }
+echo "PASS: a dead launcher's claim is taken over"
 
 echo "PASS"

@@ -88,6 +88,7 @@ jobs:
             //tests:kube_bench_test \
             //tests:kube_bench_itest \
             //tests:kube_bench_expect_fail_test \
+            //tests:two_clusters_test \
             --test_output=errors \
             --local_test_jobs=2
 

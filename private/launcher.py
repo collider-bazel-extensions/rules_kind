@@ -6,7 +6,7 @@ Reads RULES_KIND_MANIFEST (JSON) and performs the full kind cluster lifecycle:
   detect runtime (Docker or podman) → kind create cluster
   → kind get kubeconfig → wait for API server
   → kind load image-archive (images) → kubectl apply (manifests)
-  → write $TEST_TMPDIR/<name>.env → wait
+  → write $TEST_TMPDIR/<name>.env (KUBECONFIG=$TEST_TMPDIR/<name>.kubeconfig) → wait
   → SIGTERM / SIGINT / parent exit → kind delete cluster → exit 0
 
 Cleanup:
@@ -332,11 +332,14 @@ _NETWORK_RACE = "network already exists"
 _CREATE_ATTEMPTS = 3
 
 
-def _create_cluster(kind_bin, cluster_name, node_image, kind_config, env):
+def _create_cluster(kind_bin, cluster_name, node_image, kind_config, env, kubeconfig):
+    # --kubeconfig: kind writes this cluster's own file rather than merging
+    # into the shared $KUBECONFIG or ~/.kube/config.
     cmd = [
         kind_bin, "create", "cluster",
         "--name", cluster_name,
         "--image", node_image,
+        "--kubeconfig", kubeconfig,
     ]
     if kind_config:
         cmd += ["--config", kind_config]
@@ -827,6 +830,48 @@ def _alive(boot_id, pid, start_time):
             and _proc_start_time(pid) == start_time)
 
 
+class ClaimError(Exception):
+    pass
+
+
+def _claim_paths(test_tmpdir, name, label):
+    """Claim `$TEST_TMPDIR/<name>.env` and `<name>.kubeconfig` for this
+    cluster (#25). Two kind_cluster targets with the same name (in different
+    packages) in one test would write the same files; the second launcher
+    fails at once, naming both, rather than one cluster's env file silently
+    pointing at the other. A claim whose launcher is gone is taken over."""
+    path = os.path.join(test_tmpdir, f"{name}.claim")
+    pid = os.getpid()
+    mine = {"label": label, "boot_id": _boot_id(), "pid": pid,
+            "start_time": _proc_start_time(pid)}
+    for _ in range(3):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            try:
+                with open(path) as f:
+                    other = json.load(f)
+            except (OSError, ValueError):
+                other = {}
+            if other.get("pid") == pid:
+                return path
+            if _alive(other.get("boot_id"), other.get("pid"), other.get("start_time")):
+                raise ClaimError(
+                    f"kind_cluster {label}: $TEST_TMPDIR/{name}.env and "
+                    f"{name}.kubeconfig are already used by "
+                    f"{other.get('label', '?')} (pid {other.get('pid')}) in this "
+                    f"test; give the kind_cluster targets different names")
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(fd, "w") as f:
+            json.dump(mine, f)
+        return path
+    raise ClaimError(f"kind_cluster {label}: could not claim {path}")
+
+
 def _reaper_alive(rec):
     unit = rec.get("reaper_unit")
     if unit:
@@ -1017,6 +1062,7 @@ def main():
         sys.exit(1)
 
     cluster_target_name = os.environ.get("RULES_KIND_CLUSTER_TARGET_NAME", "kind_cluster")
+    cluster_label = os.environ.get("RULES_KIND_CLUSTER_LABEL", cluster_target_name)
     test_tmpdir = os.environ.get("TEST_TMPDIR") or tempfile.mkdtemp()
 
     with open(manifest_path) as f:
@@ -1067,8 +1113,15 @@ def main():
     if runtime == "podman":
         env["KIND_EXPERIMENTAL_PROVIDER"] = "podman"
 
+    try:
+        _claim_paths(test_tmpdir, cluster_target_name, cluster_label)
+    except ClaimError as e:
+        print(f"[rules_kind] ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
     cluster_name   = _allocate_cluster_name()
-    kubeconfig     = os.path.join(test_tmpdir, "kubeconfig")
+    # Per target, so two clusters in one test keep their own (#25).
+    kubeconfig     = os.path.join(test_tmpdir, f"{cluster_target_name}.kubeconfig")
     output_env     = os.path.join(test_tmpdir, f"{cluster_target_name}.env")
     keep           = _keep_cluster()
 
@@ -1125,7 +1178,7 @@ def main():
     signal.signal(signal.SIGINT,  _shutdown)
 
     try:
-        _create_cluster(kind_bin, cluster_name, node_image, kind_config, env)
+        _create_cluster(kind_bin, cluster_name, node_image, kind_config, env, kubeconfig)
         _get_kubeconfig(kind_bin, cluster_name, kubeconfig, env)
         _wait_apiserver_ready(kubectl_bin, kubeconfig)
         apiserver_url = _get_api_server_url(kubectl_bin, kubeconfig)

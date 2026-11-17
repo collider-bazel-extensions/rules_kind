@@ -41,7 +41,7 @@ rules_kind/
     ├── manifest_test.sh             # Manifest applied before env file written
     ├── kind_health_check_test.sh    # Health check behavior
     ├── kind_server_test.sh          # Cluster lifecycle, env file, SIGTERM shutdown
-    ├── launcher_unit_test.sh        # No runtime: cluster slots, RULES_KIND_SLOT_DIR, _log on a closed stdout, podman network race retry
+    ├── launcher_unit_test.sh        # No runtime: cluster slots, RULES_KIND_SLOT_DIR, _log on a closed stdout, podman network race retry, path claims (#25)
     ├── reaper_access_test.sh        # No runtime (fakes): reaper unit's runtime access probe, sg, fallback, permission errors
     ├── cluster_cleanup_test.sh      # SIGKILL / orphaning / keep / SIGKILL mid-delete / --sweep; records removed
     ├── reaper_outlives_test.sh      # SIGKILLs the launcher and exits; CI checks the cluster is gone
@@ -50,6 +50,8 @@ rules_kind/
     ├── kube_bench_unit_test.{sh,py} # No runtime: ignore file, evaluation, summary, Job spec, cluster choice
     ├── kube_bench_analysis_tests.bzl # Analysis tests: auto benchmark, targets, missing image, KindClusterInfo
     ├── kube_bench_expect_fail_test.sh # One cluster; inner kube_bench_tests: pass/unlisted/expired/stale
+    ├── two_clusters_test.sh         # Two clusters in one test: own kubeconfigs; same-name clash fails (#25)
+    ├── clash/BUILD.bazel            # //tests/clash:two_a, same name as //tests:two_a
     └── kube_bench/                  # kind_ignore.yaml (kind's FAILs + reasons), 2-node config, sample JSON
 tools/
 ├── fetch_busybox.sh          # Regenerate tests/testdata/busybox.tar
@@ -266,7 +268,7 @@ See README "kube_bench_test" and DESIGN "kube_bench_test" for the decisions.
 loads, and manifest application:
 
 ```
-KUBECONFIG=/tmp/.../kubeconfig
+KUBECONFIG=/tmp/.../<name>.kubeconfig
 KIND_CLUSTER_NAME=kind-abc123
 KUBE_API_SERVER=https://127.0.0.1:<port>
 KUBECTL=/path/to/kubectl
@@ -352,7 +354,7 @@ kube_bench_test(
 
 | Variable            | Example                        | Description                           |
 |---------------------|--------------------------------|---------------------------------------|
-| `KUBECONFIG`        | `$TEST_TMPDIR/kubeconfig`      | Kubeconfig for the kind cluster       |
+| `KUBECONFIG`        | `$TEST_TMPDIR/<name>.kubeconfig` | This cluster's own kubeconfig (`<name>` is the `kind_cluster` target name; `$TEST_TMPDIR/kubeconfig` before v0.5.0) |
 | `KIND_CLUSTER_NAME` | `kind-abc123def456`            | Unique cluster name                   |
 | `KUBE_API_SERVER`   | `https://127.0.0.1:6443`       | API server address                    |
 | `KUBECTL`           | `/path/to/kubectl`             | Absolute path to kubectl              |
@@ -405,7 +407,7 @@ All 18 test targets pass (26 tests counting the 9 analysis tests in `kube_bench_
 | `//tests:kind_health_check_test`   | health check exits non-zero without env file, 0 when file present                 | PASSED |
 | `//tests:kind_server_test`         | kind_cluster starts, writes env file with correct vars, SIGTERM shuts down        | PASSED |
 | `//tests:reaper_access_test`       | reaper unit probed for runtime access (fakes): used as is / under `sg <group>` / child-process fallback with a warning / probe unavailable; "permission denied" named and given up after 3 (no runtime) | PASSED |
-| `//tests:launcher_unit_test`       | slot limit waits and names the holder, SIGKILL frees the slot, `0` = no limit, `RULES_KIND_SLOT_DIR`; `_log` on a closed stdout; podman `kind` network race retried, other failures not (no runtime) | PASSED |
+| `//tests:launcher_unit_test`       | slot limit waits and names the holder, SIGKILL frees the slot, `0` = no limit, `RULES_KIND_SLOT_DIR`; `_log` on a closed stdout; podman `kind` network race retried, other failures not; `kind create --kubeconfig`; same-name path claim fails naming both, stale claim taken over (no runtime) | PASSED |
 | `//tests:cluster_cleanup_test`     | cluster deleted after launcher SIGKILL, after parent exit, after SIGKILL mid-delete, and by `--sweep` once launcher and reaper are gone; records removed; keep switch; reaper is a systemd user unit | PASSED |
 | `//tests:reaper_outlives_test`     | launcher SIGKILLed, test exits at once; cluster deleted afterwards (checked after `bazel test` returns) | PASSED |
 | `//tests:cluster_test`             | nodes ready, pod scheduled and reaches Running/Succeeded                          | PASSED |
@@ -419,6 +421,7 @@ All 18 test targets pass (26 tests counting the 9 analysis tests in `kube_bench_
 | `//tests:kube_bench_test`        | standalone, 2-node 1.35 cluster: kube-bench on both nodes, kind's 14 FAILs all in `kind_ignore.yaml`, cluster deleted | PASSED |
 | `//tests:kube_bench_itest`       | `kube_bench_test` as a rules_itest `service_test`'s test on a 1.37 cluster service | PASSED |
 | `//tests:kube_bench_expect_fail_test` | one cluster, inner runs: pass with a stale entry listed; unlisted 1.2.15 fails; expired entry fails; `fail_on_stale` fails | PASSED |
+| `//tests:two_clusters_test` | two clusters in one test: each env file's `KUBECONFIG` is its own `<name>.kubeconfig` reaching its own cluster; `//tests/clash:two_a` fails at once naming both (#25) | PASSED |
 
 To run cluster tests (requires Docker or podman):
 
@@ -434,9 +437,9 @@ systemd-run --scope --user --property=Delegate=yes -- \
 
 1. Reads the JSON manifest (`RULES_KIND_MANIFEST`).
 2. Resolves all runfile paths.
-3. Generates a unique cluster name (`kind-<12hex>`).
-4. Runs `kind create cluster --name <name>` with optional `--config`.
-5. Extracts the kubeconfig via `kind get kubeconfig --name <name>`.
+3. Claims `$TEST_TMPDIR/<target>.claim`, failing if another live launcher in the test has the same target name (#25). Generates a unique cluster name (`kind-<12hex>`).
+4. Runs `kind create cluster --name <name> --kubeconfig $TEST_TMPDIR/<target>.kubeconfig` with optional `--config`.
+5. Writes the kubeconfig to `$TEST_TMPDIR/<target>.kubeconfig` via `kind get kubeconfig --name <name>` (per cluster, #25).
 6. Waits for the API server (`kubectl cluster-info`, max 120 s).
 7. Loads Docker images into cluster nodes via `kind load docker-image`.
 8. Applies manifest files via `kubectl apply -f` in order.
