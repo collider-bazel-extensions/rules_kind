@@ -74,7 +74,7 @@ chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_kind", version = "0.4.0")
+bazel_dep(name = "rules_kind", version = "0.4.1")
 
 kind = use_extension("@rules_kind//:extensions.bzl", "kind")
 
@@ -947,3 +947,7 @@ systemd-run --scope --user --property=Delegate=yes -- \
 Want Bazel rules for another tool or service?
 [Request a rules package](https://github.com/collider-bazel-extensions/.github/issues/new?template=request-a-rules-package.yml).
 The [organization page](https://github.com/collider-bazel-extensions) lists every package.
+
+## License
+
+[Apache License 2.0](LICENSE) (SPDX: `Apache-2.0`).
